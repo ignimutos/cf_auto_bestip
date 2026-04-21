@@ -146,6 +146,68 @@ node cf_dns_sync.js
 
 ---
 
+## 🐉 青龙面板拉库指南
+
+### 1. 添加仓库订阅
+
+在青龙面板中进入「订阅管理」添加订阅，推荐配置：
+
+- 名称：`cf_auto_bestip`
+- 类型：`公开仓库`
+- 链接：`https://github.com/lee1080/cf_auto_bestip.git`
+- 分支：`main`
+
+### 1.1 一键订阅（可直接粘贴到“名称”）
+
+部分青龙版本支持在「创建订阅 -> 名称」中粘贴完整订阅串，一次性自动填充名称、链接、分支、白名单、黑名单。  
+可直接复制这一行：
+
+```text
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_dns_sync|config.txt#
+```
+
+说明：
+- 第 1 段：订阅名称
+- 第 2 段：仓库链接
+- 第 3 段：分支
+- 第 4 段：白名单（拉取 `cfst_test`、`cf_dns_sync`、`config.txt`）
+- 第 5 段：黑名单（留空）
+
+如果你的青龙版本不支持该格式，就按上面的“手动配置”方式填写即可。✅
+
+### 2. 任务命令示例
+
+拉库完成后，在「定时任务」中新建两个任务：
+
+- 优选测速任务（低频）：
+  - 命令：`task cf_auto_bestip/cfst_test.js`
+- DNS 同步任务（高频）：
+  - 命令：`task cf_auto_bestip/cf_dns_sync.js`
+
+### 3. 定时建议（Cron）
+
+- `cfst_test.js`：`0 23 * * 4`（每周四 23:00，可按需调整）🗓️
+- `cf_dns_sync.js`：`*/5 * * * *`（每 5 分钟）⏱️
+
+### 4. 环境变量配置
+
+在青龙「环境变量」中至少配置以下项：
+
+- `CF_API_TOKEN`
+- `CF_ZONE_ID`
+- `CF_DOMAIN`
+- `IP_SOURCE_URL`（或 `IP_RANDOM_SOURCE_URL`）
+
+如果你直接在仓库内维护 `config.txt`（且已脱敏），脚本也会自动读取。✅
+
+### 5. 运行顺序建议
+
+- 先手动执行一次 `cfst_test.js`，确认生成 `data/cfst_preferred_ips.txt`
+- 再执行 `cf_dns_sync.js`，确认 DNS 可正常更新
+- 最后开启定时任务自动运行 🔁
+
+---
+
 ## 📁 产物文件
 
 默认在 `data/` 目录：
