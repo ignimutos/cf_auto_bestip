@@ -157,23 +157,35 @@ node cf_dns_sync.js
 - 链接：`https://github.com/lee1080/cf_auto_bestip.git`
 - 分支：`main`
 
-### 1.1 一键订阅（可直接粘贴到“名称”）
+### 1.1 一键拉库（推荐：`ql repo` 命令）
 
-部分青龙版本支持在「创建订阅 -> 名称」中粘贴完整订阅串，一次性自动填充名称、链接、分支、白名单、黑名单。  
-可直接复制这一行：
+你可以直接在青龙容器内执行（成功率最高）：
 
-```text
-cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_dns_sync|config.txt#
+```bash
+ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_dns_sync|config" "README|LICENSE" ""
 ```
 
-说明：
-- 第 1 段：订阅名称
-- 第 2 段：仓库链接
-- 第 3 段：分支
-- 第 4 段：白名单（拉取 `cfst_test`、`cf_dns_sync`、`config.txt`）
-- 第 5 段：黑名单（留空）
+参数含义（与 `jdpro` 示例同风格）：
 
-如果你的青龙版本不支持该格式，就按上面的“手动配置”方式填写即可。✅
+- 第 1 个参数：仓库链接
+- 第 2 个参数：白名单正则（只拉目标脚本/配置）
+- 第 3 个参数：依赖文件规则（这里留空）
+- 第 4 个参数：黑名单正则（排除无关文件）
+
+### 1.2 名称粘贴模式（部分版本支持）
+
+如果你的青龙版本支持「创建订阅 -> 名称」自动解析，可尝试：
+
+```text
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_dns_sync|config#README|LICENSE#
+```
+
+说明（名称粘贴模式字段顺序）：
+
+- 名称#链接#分支#白名单#黑名单#依赖文件
+- 本示例中：黑名单是 `README|LICENSE`，依赖文件留空
+
+若该模式仍不生效，请优先使用上面的 `ql repo` 命令方式。✅
 
 ### 2. 任务命令示例
 

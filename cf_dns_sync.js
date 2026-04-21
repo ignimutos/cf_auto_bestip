@@ -1,4 +1,6 @@
-// cron "*/5 * * * *"
+// cron "*/5 * * * *" cf_dns_sync.js, tag:Cloudflare DNS自动同步
+function Env(name) { this.name = name; }
+const $ = new Env('Cloudflare DNS自动同步');
 /**
  * Cloudflare 域名优选 IP 自动故障转移与解析同步脚本 (Node.js 版)
  *

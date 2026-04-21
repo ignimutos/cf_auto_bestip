@@ -1,4 +1,6 @@
-// cron "0 23 * * 4"
+// cron "0 23 * * 4" cfst_test.js, tag:CFST优选测速
+function Env(name) { this.name = name; }
+const $ = new Env('CFST优选测速');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
