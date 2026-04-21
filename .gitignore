@@ -1,0 +1,8 @@
+# Runtime outputs
+data/
+*.log
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+
