@@ -39,8 +39,9 @@ function loadEnvFromConfigTxtIfNeeded(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const lines = raw.split(/\r?\n/);
   for (const line of lines) {
-    const trimmed = line.trim();
+    let trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('export ')) trimmed = trimmed.slice('export '.length).trim();
     const idx = trimmed.indexOf('=');
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim();
@@ -52,7 +53,72 @@ function loadEnvFromConfigTxtIfNeeded(filePath) {
   }
 }
 
-// 在读取配置前先补齐 env
+function parseConfigShToEnvIfNeeded(data) {
+  const lines = data.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('export ')) continue;
+
+    // export KEY="VALUE"
+    let m = trimmed.match(/^export\s+(\w+)="([^"]*)"$/);
+    if (m) {
+      const key = m[1];
+      const value = m[2];
+      if (!process.env[key]) process.env[key] = value;
+      continue;
+    }
+
+    // export KEY='VALUE'
+    m = trimmed.match(/^export\s+(\w+)='([^']*)'$/);
+    if (m) {
+      const key = m[1];
+      const value = m[2];
+      if (!process.env[key]) process.env[key] = value;
+      continue;
+    }
+
+    // export KEY=VALUE
+    m = trimmed.match(/^export\s+(\w+)=(.+)$/);
+    if (m) {
+      const key = m[1];
+      const rawValue = (m[2] || '').trim();
+      if (!process.env[key]) process.env[key] = rawValue;
+    }
+  }
+}
+
+function loadEnvFromQingLongConfigIfNeeded() {
+  const candidates = [
+    '/ql/data/config/config.json',
+    '/ql/config/config.json',
+    '/ql/data/config/config.sh'
+  ];
+  for (const fp of candidates) {
+    if (!fs.existsSync(fp)) continue;
+    try {
+      const raw = fs.readFileSync(fp, 'utf8');
+      if (fp.endsWith('.json')) {
+        const json = JSON.parse(raw);
+        if (json && typeof json === 'object') {
+          for (const [k, v] of Object.entries(json)) {
+            if (v === undefined || v === null) continue;
+            const str = String(v);
+            if (!process.env[k]) process.env[k] = str;
+          }
+        }
+      } else {
+        parseConfigShToEnvIfNeeded(raw);
+      }
+      console.log(`已加载青龙配置文件: ${fp}`);
+      return;
+    } catch (e) {
+      console.warn(`无法加载青龙配置 ${fp}: ${e.message}`);
+    }
+  }
+}
+
+// 优先：青龙环境变量(天然优先) > 青龙 config -> 再用本目录 config.txt 补齐默认值
+loadEnvFromQingLongConfigIfNeeded();
 loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
 
 // ================================
@@ -212,12 +278,12 @@ function parseConfigSh(data) {
       if (match) {
         const key = match[1];
         const value = match[2];
-        process.env[key] = value;
+        if (!process.env[key]) process.env[key] = value;
         config[key.toLowerCase()] = value;
       } else {
         const matchInt = line.match(/export\s+(\w+)=([0-9]+)/);
         if (matchInt) {
-          process.env[matchInt[1]] = matchInt[2];
+          if (!process.env[matchInt[1]]) process.env[matchInt[1]] = matchInt[2];
           config[matchInt[1].toLowerCase()] = matchInt[2];
         }
       }
