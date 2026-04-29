@@ -26,8 +26,9 @@ function loadEnvFromConfigTxtIfNeeded(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const lines = raw.split(/\r?\n/);
   for (const line of lines) {
-    const trimmed = line.trim();
+    let trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
+    if (trimmed.startsWith('export ')) trimmed = trimmed.slice('export '.length).trim();
     const idx = trimmed.indexOf('=');
     if (idx <= 0) continue;
     const key = trimmed.slice(0, idx).trim();
@@ -103,7 +104,7 @@ function loadEnvFromQingLongConfigIfNeeded() {
   }
 }
 
-// 优先：青龙配置 -> 再用本目录 config.txt 补齐（便于分享/本地跑）
+// 优先级：青龙环境变量(天然优先) > 青龙配置 -> 再用本目录 config.txt 补齐默认值
 loadEnvFromQingLongConfigIfNeeded();
 loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
 
