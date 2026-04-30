@@ -555,7 +555,7 @@ async function main() {
 
   try {
     await new Promise((resolve, reject) => {
-      const cfstProcess = spawn(CFST_PATH, cfstArgs, { stdio: 'inherit' });
+      const cfstProcess = spawn(CFST_PATH, cfstArgs, { stdio: 'inherit', cwd: DATA_DIR });
       cfstProcess.on('close', (code) => {
         console.log(`\nCloudflareST 执行完毕，退出码: ${code}`);
         resolve();
