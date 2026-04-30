@@ -61,12 +61,17 @@ export CF_DOMAIN=
 # 若留空，脚本默认读取 ./data/cfst_preferred_ips.txt
 export CF_IP_POOL=./data/cfst_preferred_ips.txt
 
+# 更新模式：
+# - fallback：默认模式，优先保留当前健康解析，不足时再从池中补位
+# - latency：把当前 DNS 和候选池一起探测，选择延迟最低的健康 IP
+export IP_UPDATE_MODE=fallback
+
 # 最终保留在 DNS 解析中的健康 IP 数量
 export MAX_IPS=5
 
 # 告警阈值（健康 IP <= 该值 且不足 MAX_IPS 时触发）
 export NOTIFY_THRESHOLD=2
 
-# 每轮从池中随机抽样测试数量（0=全测）
-export POOL_SAMPLE_COUNT=10
+# 每轮从池中随机抽样测试数量（0=全测，仅 fallback 模式使用）
+export POOL_SAMPLE_COUNT=0
 

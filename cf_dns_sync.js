@@ -121,16 +121,46 @@ const DATA_DIR = resolveDataDir();
 const DEFAULT_POOL_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
 
 // --- 配置区域 (优先从环境变量读取) ---
-function loadRuntimeConfig() {
+function normalizeIpUpdateMode(rawMode) {
+  return rawMode === 'latency' ? 'latency' : 'fallback';
+}
+
+function parseRuntimeConfig(env) {
   return {
-    CF_API_TOKEN: process.env.CF_API_TOKEN,
-    CF_ZONE_ID: process.env.CF_ZONE_ID,
-    CF_DOMAIN: process.env.CF_DOMAIN,
-    CF_IP_POOL: process.env.CF_IP_POOL || '',
-    MAX_IPS: parseInt(process.env.MAX_IPS) || 2,
-    NOTIFY_THRESHOLD: parseInt(process.env.NOTIFY_THRESHOLD) || 2,
-    POOL_SAMPLE_COUNT: parseInt(process.env.POOL_SAMPLE_COUNT) || 0
+    CF_API_TOKEN: env.CF_API_TOKEN,
+    CF_ZONE_ID: env.CF_ZONE_ID,
+    CF_DOMAIN: env.CF_DOMAIN,
+    CF_IP_POOL: env.CF_IP_POOL || '',
+    MAX_IPS: parseInt(env.MAX_IPS, 10) || 2,
+    NOTIFY_THRESHOLD: parseInt(env.NOTIFY_THRESHOLD, 10) || 2,
+    POOL_SAMPLE_COUNT: parseInt(env.POOL_SAMPLE_COUNT, 10) || 0,
+    IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
   };
+}
+
+function buildFallbackTargetIps(healthyCurrentEntries, healthyPoolEntries, maxIps) {
+  const retainedIps = healthyCurrentEntries.slice(0, maxIps).map(entry => entry.ip);
+  if (retainedIps.length >= maxIps) return retainedIps;
+
+  const gapSize = maxIps - retainedIps.length;
+  const supplementaryIps = healthyPoolEntries.slice(0, gapSize).map(entry => entry.ip);
+  return [...retainedIps, ...supplementaryIps];
+}
+
+function buildLatencyCandidateIps(currentIps, poolIps) {
+  return Array.from(new Set([...currentIps, ...poolIps]));
+}
+
+function pickTopHealthyIps(results, maxIps) {
+  return results
+    .filter(result => result.success)
+    .sort((a, b) => a.latency - b.latency)
+    .slice(0, maxIps)
+    .map(result => result.ip);
+}
+
+function loadRuntimeConfig() {
+  return parseRuntimeConfig(process.env);
 }
 
 const TEST_TIMEOUT = 2000;
@@ -328,8 +358,23 @@ async function cfApiRequest(method, apiPath, data = null) {
   });
 }
 
+function sortHealthyEntries(results) {
+  return results
+    .filter(result => result.success)
+    .sort((a, b) => a.latency - b.latency);
+}
+
 async function main() {
-  const { CF_API_TOKEN, CF_ZONE_ID, CF_DOMAIN, CF_IP_POOL, MAX_IPS, NOTIFY_THRESHOLD, POOL_SAMPLE_COUNT } = loadRuntimeConfig();
+  const {
+    CF_API_TOKEN,
+    CF_ZONE_ID,
+    CF_DOMAIN,
+    CF_IP_POOL,
+    MAX_IPS,
+    NOTIFY_THRESHOLD,
+    POOL_SAMPLE_COUNT,
+    IP_UPDATE_MODE,
+  } = loadRuntimeConfig();
   console.log(`\n🚀 开始执行 Cloudflare DNS 自动同步（本地池支持版）...`);
   console.log(`数据目录: ${DATA_DIR}`);
   console.log(`目标域名: ${CF_DOMAIN}`);
@@ -350,50 +395,64 @@ async function main() {
 
   const currentIps = currentRecords.map(r => r.content);
   console.log(`当前在岗 IP: [${currentIps.join(', ') || '无'}]`);
-
-  let healthyInPlaceEntries = [];
-  if (currentIps.length > 0) {
-    console.log(`⏳ 正在对当前 ${currentIps.length} 个在岗 IP 进行连通性测试...`);
-    const currentTestResults = await Promise.all(currentIps.map(ip => testIp(ip)));
-    healthyInPlaceEntries = currentTestResults
-      .filter(r => r.success)
-      .sort((a, b) => a.latency - b.latency);
-    console.log(`✅ 在岗检测完成: ${healthyInPlaceEntries.length} 个健康, ${currentIps.length - healthyInPlaceEntries.length} 个失效`);
-  }
+  console.log(`更新模式: ${IP_UPDATE_MODE}`);
 
   let finalHealthyIps = [];
 
-  if (healthyInPlaceEntries.length >= MAX_IPS) {
-    finalHealthyIps = healthyInPlaceEntries.slice(0, MAX_IPS).map(e => e.ip);
-    console.log(`✨ 现有健康 IP 足供使用，无需从池中采集。`);
-  } else {
-    const gapSize = MAX_IPS - healthyInPlaceEntries.length;
-    console.log(`补充逻辑激活: 当前还缺少 ${gapSize} 个健康 IP`);
-
-    console.log('📥 正在解析候选 IP 池...');
+  if (IP_UPDATE_MODE === 'latency') {
+    console.log('\n⚖️ latency 模式：统一比较当前 DNS 与候选池的探测延迟...');
     const poolIps = await parseIpPool(CF_IP_POOL);
+    const candidateIps = buildLatencyCandidateIps(currentIps, poolIps);
 
-    let candidatePoolIps = poolIps.filter(ip => !currentIps.includes(ip));
+    console.log(`🔍 待测试候选 IP 数量: ${candidateIps.length}`);
+    const latencyResults = candidateIps.length > 0
+      ? await Promise.all(candidateIps.map(ip => testIp(ip)))
+      : [];
 
-    if (POOL_SAMPLE_COUNT > 0 && candidatePoolIps.length > POOL_SAMPLE_COUNT) {
-      console.log(`🎲 池中 IP 较多 (${candidatePoolIps.length})，随机抽取 ${POOL_SAMPLE_COUNT} 个进行测试...`);
-      shuffleArray(candidatePoolIps);
-      candidatePoolIps = candidatePoolIps.slice(0, POOL_SAMPLE_COUNT);
+    finalHealthyIps = pickTopHealthyIps(latencyResults, MAX_IPS);
+    console.log(`📊 latency 优选结果: ${finalHealthyIps.length} 个健康 IP 入选`);
+  } else {
+    let healthyInPlaceEntries = [];
+    if (currentIps.length > 0) {
+      console.log(`⏳ 正在对当前 ${currentIps.length} 个在岗 IP 进行连通性测试...`);
+      const currentTestResults = await Promise.all(currentIps.map(ip => testIp(ip)));
+      healthyInPlaceEntries = sortHealthyEntries(currentTestResults);
+      console.log(`✅ 在岗检测完成: ${healthyInPlaceEntries.length} 个健康, ${currentIps.length - healthyInPlaceEntries.length} 个失效`);
     }
 
-    console.log(`🔍 待补充测试 IP 数量: ${candidatePoolIps.length}`);
-
-    if (candidatePoolIps.length > 0) {
-      const poolResults = await Promise.all(candidatePoolIps.map(ip => testIp(ip)));
-      const healthyPoolEntries = poolResults
-        .filter(r => r.success)
-        .sort((a, b) => a.latency - b.latency);
-
-      console.log(`📊 池中优选结果: 发现 ${healthyPoolEntries.length} 个健康 IP`);
-      const supplementaryIps = healthyPoolEntries.slice(0, gapSize).map(e => e.ip);
-      finalHealthyIps = [...healthyInPlaceEntries.map(e => e.ip), ...supplementaryIps];
+    if (healthyInPlaceEntries.length >= MAX_IPS) {
+      finalHealthyIps = healthyInPlaceEntries.slice(0, MAX_IPS).map(entry => entry.ip);
+      console.log('✨ 现有健康 IP 足供使用，无需从池中采集。');
     } else {
-      finalHealthyIps = healthyInPlaceEntries.map(e => e.ip);
+      const gapSize = MAX_IPS - healthyInPlaceEntries.length;
+      console.log(`补充逻辑激活: 当前还缺少 ${gapSize} 个健康 IP`);
+
+      console.log('📥 正在解析候选 IP 池...');
+      const poolIps = await parseIpPool(CF_IP_POOL);
+
+      let candidatePoolIps = poolIps.filter(ip => !currentIps.includes(ip));
+      if (POOL_SAMPLE_COUNT > 0 && candidatePoolIps.length > POOL_SAMPLE_COUNT) {
+        console.log(`🎲 池中 IP 较多 (${candidatePoolIps.length})，随机抽取 ${POOL_SAMPLE_COUNT} 个进行测试...`);
+        shuffleArray(candidatePoolIps);
+        candidatePoolIps = candidatePoolIps.slice(0, POOL_SAMPLE_COUNT);
+      }
+
+      console.log(`🔍 待补充测试 IP 数量: ${candidatePoolIps.length}`);
+
+      const poolResults = candidatePoolIps.length > 0
+        ? await Promise.all(candidatePoolIps.map(ip => testIp(ip)))
+        : [];
+      const healthyPoolEntries = sortHealthyEntries(poolResults);
+
+      if (candidatePoolIps.length > 0) {
+        console.log(`📊 池中优选结果: 发现 ${healthyPoolEntries.length} 个健康 IP`);
+      }
+
+      finalHealthyIps = buildFallbackTargetIps(
+        healthyInPlaceEntries,
+        healthyPoolEntries,
+        MAX_IPS,
+      );
     }
   }
 
@@ -451,8 +510,19 @@ async function main() {
   }
 }
 
-main().catch(err => {
-  console.error(`\n❌ 脚本全局错误: ${err.message}`);
-  sendNotification('❌ CF 同步脚本崩溃', err.message);
-});
+module.exports = {
+  buildFallbackTargetIps,
+  buildLatencyCandidateIps,
+  loadRuntimeConfig,
+  normalizeIpUpdateMode,
+  parseRuntimeConfig,
+  pickTopHealthyIps,
+};
+
+if (require.main === module) {
+  main().catch(err => {
+    console.error(`\n❌ 脚本全局错误: ${err.message}`);
+    sendNotification('❌ CF 同步脚本崩溃', err.message);
+  });
+}
 

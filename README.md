@@ -94,9 +94,10 @@
 - `CF_ZONE_ID`：Zone ID（必填）
 - `CF_DOMAIN`：要维护的域名（必填）
 - `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_preferred_ips.txt`
+- `IP_UPDATE_MODE`：更新模式，`fallback` 为默认故障转移模式，`latency` 为统一探测当前 DNS 与池中 IP 后按延迟选优
 - `MAX_IPS`：期望维持的 A 记录数量（默认 2）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
-- `POOL_SAMPLE_COUNT`：池过大时随机抽样测试数量（默认 0=不抽样）
+- `POOL_SAMPLE_COUNT`：池过大时随机抽样测试数量（默认 0=不抽样，仅 `fallback` 模式使用）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 
 ---
