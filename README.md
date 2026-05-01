@@ -99,6 +99,9 @@
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
 - `POOL_SAMPLE_COUNT`：池过大时随机抽样测试数量（默认 0=不抽样，仅 `fallback` 模式使用）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
+- `GITHUB_TOKEN`：GitHub Token（可选；与 `GIST_NAME` 同时配置时启用 Gist 同步）
+- `GIST_NAME`：Gist 文件名（可选）
+- `GIST_SECRET`：是否创建 secret gist（可选；仅 `true` 视为 secret，其它值都按 public 处理）
 
 ---
 
@@ -127,6 +130,9 @@ CF_API_TOKEN=your_token
 CF_ZONE_ID=your_zone_id
 CF_DOMAIN=example.com
 MAX_IPS=2
+GITHUB_TOKEN=your_github_token
+GIST_NAME=cf_ips.txt
+GIST_SECRET=false
 ```
 
 ### 3. 运行脚本
@@ -232,6 +238,7 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_d
 - `cfst_preferred_ips.txt` - 优选 IP 池（供 DNS 同步脚本消费）
 - `cfst_ips.txt` - 本次测试输入 IP 临时文件
 - `result.csv` - CloudflareST 原始结果
+- `cf_dns_sync_gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
 
 ---
 

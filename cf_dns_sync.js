@@ -119,10 +119,33 @@ function resolveDataDir() {
 
 const DATA_DIR = resolveDataDir();
 const DEFAULT_POOL_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
+const GIST_ID_STATE_FILE = path.join(__dirname, 'data', 'cf_dns_sync_gist_id.txt');
 
 // --- 配置区域 (优先从环境变量读取) ---
 function normalizeIpUpdateMode(rawMode) {
   return rawMode === 'latency' ? 'latency' : 'fallback';
+}
+
+function parseBooleanEnv(rawValue) {
+  return String(rawValue || '').trim().toLowerCase() === 'true';
+}
+
+function isGistSyncConfigured(config) {
+  return Boolean(config.GITHUB_TOKEN && config.GIST_NAME);
+}
+
+function formatGistIpContent(ips) {
+  return ips.join('\n');
+}
+
+function readGistIdStateFile(filePath = GIST_ID_STATE_FILE) {
+  if (!fs.existsSync(filePath)) return '';
+  return fs.readFileSync(filePath, 'utf8').trim();
+}
+
+function writeGistIdStateFile(gistId, filePath = GIST_ID_STATE_FILE) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${gistId}\n`, 'utf8');
 }
 
 function parseRuntimeConfig(env) {
@@ -135,6 +158,9 @@ function parseRuntimeConfig(env) {
     NOTIFY_THRESHOLD: parseInt(env.NOTIFY_THRESHOLD, 10) || 2,
     POOL_SAMPLE_COUNT: parseInt(env.POOL_SAMPLE_COUNT, 10) || 0,
     IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
+    GITHUB_TOKEN: env.GITHUB_TOKEN,
+    GIST_NAME: (env.GIST_NAME || '').trim(),
+    GIST_SECRET: parseBooleanEnv(env.GIST_SECRET),
   };
 }
 
@@ -358,10 +384,144 @@ async function cfApiRequest(method, apiPath, data = null) {
   });
 }
 
+function githubApiRequest(method, apiPath, token, data = null) {
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.github.com',
+      port: 443,
+      path: apiPath,
+      method,
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'cf_auto_bestip',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      res.on('data', chunk => body += chunk);
+      res.on('end', () => {
+        try {
+          const json = body ? JSON.parse(body) : {};
+          if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
+          else reject(new Error(json.message || `GitHub API ${res.statusCode}`));
+        } catch (e) {
+          reject(new Error(`解析 GitHub 响应失败: ${e.message}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    if (data) req.write(JSON.stringify(data));
+    req.end();
+  });
+}
+
+async function createGist(token, filename, content, isSecret, apiRequest = githubApiRequest) {
+  return apiRequest('POST', '/gists', token, {
+    public: !isSecret,
+    files: {
+      [filename]: {
+        content,
+      },
+    },
+  });
+}
+
+async function updateGist(token, gistId, filename, content, apiRequest = githubApiRequest) {
+  return apiRequest('PATCH', `/gists/${gistId}`, token, {
+    files: {
+      [filename]: {
+        content,
+      },
+    },
+  });
+}
+
+async function syncGistIpList(config, finalHealthyIps, deps = {}) {
+  const stateFilePath = deps.stateFilePath || GIST_ID_STATE_FILE;
+  const apiRequest = deps.githubApiRequest || githubApiRequest;
+  const content = formatGistIpContent(finalHealthyIps);
+  const gistId = readGistIdStateFile(stateFilePath);
+
+  if (gistId) {
+    await updateGist(config.GITHUB_TOKEN, gistId, config.GIST_NAME, content, apiRequest);
+    return { action: 'updated', gistId };
+  }
+
+  const created = await createGist(
+    config.GITHUB_TOKEN,
+    config.GIST_NAME,
+    content,
+    config.GIST_SECRET,
+    apiRequest,
+  );
+
+  if (!created || !created.id) {
+    throw new Error('创建 Gist 响应缺少 gist id');
+  }
+
+  writeGistIdStateFile(created.id, stateFilePath);
+  return { action: 'created', gistId: created.id };
+}
+
 function sortHealthyEntries(results) {
   return results
     .filter(result => result.success)
     .sort((a, b) => a.latency - b.latency);
+}
+
+async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain, apiRequest = cfApiRequest }) {
+  const currentIps = currentRecords.map(r => r.content);
+  const toDelete = currentRecords.filter(r => !finalHealthyIps.includes(r.content));
+  const toAdd = finalHealthyIps.filter(ip => !currentIps.includes(ip));
+
+  let successfulChangeCount = 0;
+  let failedChangeCount = 0;
+
+  for (const record of toDelete) {
+    console.log(`🗑️ 正在移除记录: ${record.content} ...`);
+    try {
+      await apiRequest('DELETE', `/zones/${zoneId}/dns_records/${record.id}`, null);
+      successfulChangeCount++;
+    } catch (e) {
+      failedChangeCount++;
+      console.error(`❌ 删除失败: ${e.message}`);
+    }
+  }
+
+  for (const ip of toAdd) {
+    console.log(`➕ 正在新增解析: ${ip} ...`);
+    try {
+      await apiRequest('POST', `/zones/${zoneId}/dns_records`, {
+        type: 'A',
+        name: domain,
+        content: ip,
+        proxied: false,
+        ttl: 60,
+      });
+      successfulChangeCount++;
+    } catch (e) {
+      failedChangeCount++;
+      console.error(`❌ 添加失败: ${e.message}`);
+    }
+  }
+
+  return {
+    currentIps,
+    toDelete,
+    toAdd,
+    plannedChangeCount: toDelete.length + toAdd.length,
+    successfulChangeCount,
+    failedChangeCount,
+  };
+}
+
+function shouldSyncGistAfterDnsChange(changeResult) {
+  return changeResult.plannedChangeCount > 0 && changeResult.failedChangeCount === 0;
 }
 
 async function main() {
@@ -374,6 +534,9 @@ async function main() {
     NOTIFY_THRESHOLD,
     POOL_SAMPLE_COUNT,
     IP_UPDATE_MODE,
+    GITHUB_TOKEN,
+    GIST_NAME,
+    GIST_SECRET,
   } = loadRuntimeConfig();
   console.log(`\n🚀 开始执行 Cloudflare DNS 自动同步（本地池支持版）...`);
   console.log(`数据目录: ${DATA_DIR}`);
@@ -470,53 +633,59 @@ async function main() {
 
   console.log(`✅ 最终目标 IP 集合: [${finalHealthyIps.join(', ')}]`);
 
-  const toDelete = currentRecords.filter(r => !finalHealthyIps.includes(r.content));
-  const toAdd = finalHealthyIps.filter(ip => !currentIps.includes(ip));
+  const changeResult = await applyDnsChanges({
+    currentRecords,
+    finalHealthyIps,
+    zoneId: CF_ZONE_ID,
+    domain: CF_DOMAIN,
+  });
 
-  let changeCount = 0;
-
-  for (const record of toDelete) {
-    console.log(`🗑️ 正在移除记录: ${record.content} ...`);
-    try {
-      await cfApiRequest('DELETE', `/zones/${CF_ZONE_ID}/dns_records/${record.id}`);
-      changeCount++;
-    } catch (e) {
-      console.error(`❌ 删除失败: ${e.message}`);
-    }
-  }
-
-  for (const ip of toAdd) {
-    console.log(`➕ 正在新增解析: ${ip} ...`);
-    try {
-      await cfApiRequest('POST', `/zones/${CF_ZONE_ID}/dns_records`, {
-        type: 'A',
-        name: CF_DOMAIN,
-        content: ip,
-        proxied: false,
-        ttl: 60
-      });
-      changeCount++;
-    } catch (e) {
-      console.error(`❌ 添加失败: ${e.message}`);
-    }
-  }
-
-  if (changeCount > 0) {
-    console.log(`\n🎉 DNS 解析已更新！(高频运行：跳过常规通知)`);
-    console.log(`旧状态: [${currentIps.join(', ') || '空'}]`);
-    console.log(`新状态: [${finalHealthyIps.join(', ')}]`);
-  } else {
+  if (changeResult.plannedChangeCount === 0) {
     console.log('\n✨ 当前解析记录依然健康且稳定，无变动。');
+    return;
   }
+
+  if (shouldSyncGistAfterDnsChange(changeResult)) {
+    console.log(`\n🎉 DNS 解析已更新！(高频运行：跳过常规通知)`);
+    console.log(`旧状态: [${changeResult.currentIps.join(', ') || '空'}]`);
+    console.log(`新状态: [${finalHealthyIps.join(', ')}]`);
+
+    if (isGistSyncConfigured({ GITHUB_TOKEN, GIST_NAME })) {
+      try {
+        const gistResult = await syncGistIpList(
+          { GITHUB_TOKEN, GIST_NAME, GIST_SECRET },
+          finalHealthyIps,
+        );
+        console.log(`📝 Gist 已${gistResult.action === 'created' ? '创建' : '更新'}: ${gistResult.gistId}`);
+      } catch (e) {
+        console.error(`❌ Gist 同步失败: ${e.message}`);
+        await sendNotification('⚠️ Gist 同步失败', `域名 ${CF_DOMAIN} 的 DNS 已更新，但 Gist 同步失败：${e.message}`);
+      }
+    } else {
+      console.log('ℹ️ 未配置 GITHUB_TOKEN 或 GIST_NAME，跳过 Gist 同步。');
+    }
+
+    return;
+  }
+
+  console.warn(`⚠️ DNS 变更未全部成功：成功 ${changeResult.successfulChangeCount} 项，失败 ${changeResult.failedChangeCount} 项。已跳过 Gist 同步。`);
 }
 
 module.exports = {
+  applyDnsChanges,
   buildFallbackTargetIps,
   buildLatencyCandidateIps,
+  formatGistIpContent,
+  isGistSyncConfigured,
   loadRuntimeConfig,
   normalizeIpUpdateMode,
+  parseBooleanEnv,
   parseRuntimeConfig,
   pickTopHealthyIps,
+  readGistIdStateFile,
+  shouldSyncGistAfterDnsChange,
+  syncGistIpList,
+  writeGistIdStateFile,
 };
 
 if (require.main === module) {

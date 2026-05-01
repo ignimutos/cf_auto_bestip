@@ -75,3 +75,14 @@ export NOTIFY_THRESHOLD=2
 # 每轮从池中随机抽样测试数量（0=全测，仅 fallback 模式使用）
 export POOL_SAMPLE_COUNT=0
 
+# GitHub Token（与 GIST_NAME 同时存在时启用 Gist 同步）
+export GITHUB_TOKEN=
+
+# Gist 文件名（例如 cf_ips.txt）
+export GIST_NAME=
+
+# 是否创建 secret gist（仅 true 视为 secret；否则为 public）
+export GIST_SECRET=false
+
+# 首次创建后返回的 gist id 会自动保存到 ./data/cf_dns_sync_gist_id.txt
+
