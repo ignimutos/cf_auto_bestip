@@ -1,6 +1,6 @@
-// cron "*/5 * * * *" cf_dns_sync.js, tag:Cloudflare DNS自动同步
+// cron "*/5 * * * *" cf_ip_sync.js, tag:Cloudflare IP同步
 function Env(name) { this.name = name; }
-const $ = new Env('Cloudflare DNS自动同步');
+const syncEnv = new Env('Cloudflare IP同步');
 /**
  * Cloudflare 域名优选 IP 自动故障转移与解析同步脚本 (Node.js 版)
  *
@@ -12,6 +12,8 @@ const $ = new Env('Cloudflare DNS自动同步');
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 
@@ -119,18 +121,25 @@ function resolveDataDir() {
 
 const DATA_DIR = resolveDataDir();
 const DEFAULT_POOL_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
-const GIST_ID_STATE_FILE = path.join(__dirname, 'data', 'cf_dns_sync_gist_id.txt');
+const GIST_ID_STATE_FILE = path.join(__dirname, 'data', 'cf_ip_sync_gist_id.txt');
+const CFST_CANDIDATES = os.platform() === 'win32'
+  ? ['CloudflareST.exe', 'cfst.exe']
+  : ['CloudflareST', 'cfst'];
 
 // --- 配置区域 (优先从环境变量读取) ---
 function normalizeIpUpdateMode(rawMode) {
-  return rawMode === 'latency' ? 'latency' : 'fallback';
+  return rawMode === 'speed' ? 'speed' : 'latency';
 }
 
 function parseBooleanEnv(rawValue) {
   return String(rawValue || '').trim().toLowerCase() === 'true';
 }
 
-function isGistSyncConfigured(config) {
+function hasCloudflareOutput(config) {
+  return Boolean(config.CF_API_TOKEN && config.CF_ZONE_ID && config.CF_DOMAIN);
+}
+
+function hasGistOutput(config) {
   return Boolean(config.GITHUB_TOKEN && config.GIST_NAME);
 }
 
@@ -161,29 +170,15 @@ function parseRuntimeConfig(env) {
     GITHUB_TOKEN: env.GITHUB_TOKEN,
     GIST_NAME: (env.GIST_NAME || '').trim(),
     GIST_SECRET: parseBooleanEnv(env.GIST_SECRET),
+    CFST_LATENCY_THRESHOLD: parseInt(env.CFST_LATENCY_THRESHOLD, 10) || 500,
+    DOWNLOAD_SPEED_THRESHOLD_MBPS: parseFloat(env.DOWNLOAD_SPEED_THRESHOLD_MBPS) || 10,
+    SPEED_TEST_DURATION_S: parseInt(env.SPEED_TEST_DURATION_S, 10) || 10,
+    CFST_TEST_COUNT: parseInt(env.CFST_TEST_COUNT, 10) || 30,
+    LATENCY_TEST_CONCURRENCY: parseInt(env.LATENCY_TEST_CONCURRENCY, 10) || 200,
+    CFST_SPEED_TEST_URL: env.CFST_SPEED_TEST_URL || '',
   };
 }
 
-function buildFallbackTargetIps(healthyCurrentEntries, healthyPoolEntries, maxIps) {
-  const retainedIps = healthyCurrentEntries.slice(0, maxIps).map(entry => entry.ip);
-  if (retainedIps.length >= maxIps) return retainedIps;
-
-  const gapSize = maxIps - retainedIps.length;
-  const supplementaryIps = healthyPoolEntries.slice(0, gapSize).map(entry => entry.ip);
-  return [...retainedIps, ...supplementaryIps];
-}
-
-function buildLatencyCandidateIps(currentIps, poolIps) {
-  return Array.from(new Set([...currentIps, ...poolIps]));
-}
-
-function pickTopHealthyIps(results, maxIps) {
-  return results
-    .filter(result => result.success)
-    .sort((a, b) => a.latency - b.latency)
-    .slice(0, maxIps)
-    .map(result => result.ip);
-}
 
 function loadRuntimeConfig() {
   return parseRuntimeConfig(process.env);
@@ -307,12 +302,56 @@ async function parseIpPool(poolStr) {
   return Array.from(new Set([...directIps, ...remoteIps, ...localIps]));
 }
 
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
+function findBinaryRecursive(dir, targetNames) {
+  const files = fs.readdirSync(dir);
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      const found = findBinaryRecursive(fullPath, targetNames);
+      if (found) return found;
+    } else if (targetNames.includes(file)) {
+      return fullPath;
+    }
   }
-  return array;
+  return '';
+}
+
+function findExistingCfstBinary(startDir = __dirname) {
+  return findBinaryRecursive(startDir, CFST_CANDIDATES);
+}
+
+function parseCfstCsvResults(csvPath) {
+  const data = fs.readFileSync(csvPath, 'utf8');
+  const lines = data.split('\n').filter(Boolean);
+  return lines.slice(1).map(line => {
+    const cols = line.split(',');
+    return {
+      ip: cols[0],
+      speed: parseFloat(cols[5]),
+    };
+  }).filter(result => result.ip && !Number.isNaN(result.speed));
+}
+
+async function defaultRunCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, config }) {
+  const args = [
+    '-f', inputFilePath,
+    '-tl', String(config.CFST_LATENCY_THRESHOLD),
+    '-sl', String(config.DOWNLOAD_SPEED_THRESHOLD_MBPS),
+    '-dn', String(config.CFST_TEST_COUNT || Math.max(config.MAX_IPS, 10)),
+    '-dt', String(config.SPEED_TEST_DURATION_S),
+    '-n', String(config.LATENCY_TEST_CONCURRENCY),
+  ];
+
+  if (config.CFST_SPEED_TEST_URL) {
+    args.push('-url', config.CFST_SPEED_TEST_URL);
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(cfstBinaryPath, args, { stdio: 'inherit', cwd: path.dirname(resultCsvPath) });
+    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(`CloudflareST exited with code ${code}`)));
+    child.on('error', reject);
+  });
 }
 
 function testIp(ip) {
@@ -474,6 +513,38 @@ function sortHealthyEntries(results) {
     .sort((a, b) => a.latency - b.latency);
 }
 
+async function selectIpsByLatency(poolIps, config, deps = {}) {
+  const probe = deps.testIp || testIp;
+  const results = poolIps.length > 0
+    ? await Promise.all(poolIps.map(ip => probe(ip)))
+    : [];
+
+  return sortHealthyEntries(results)
+    .slice(0, config.MAX_IPS)
+    .map(entry => entry.ip);
+}
+
+async function selectIpsBySpeed(poolIps, config, deps = {}) {
+  const dataDir = deps.dataDir || DATA_DIR;
+  const inputFilePath = path.join(dataDir, 'cf_ip_sync_cfst_ips.txt');
+  const resultCsvPath = path.join(dataDir, 'result.csv');
+  const cfstBinaryPath = deps.cfstBinaryPath || (deps.findExistingCfstBinary || findExistingCfstBinary)(__dirname);
+
+  if (!cfstBinaryPath) {
+    throw new Error('未找到 CloudflareST，可先运行 cfst_test.js');
+  }
+
+  fs.writeFileSync(inputFilePath, poolIps.join('\n'), 'utf8');
+  if (fs.existsSync(resultCsvPath)) fs.unlinkSync(resultCsvPath);
+
+  const runCfst = deps.runCfst || defaultRunCfst;
+  await runCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, config });
+
+  return parseCfstCsvResults(resultCsvPath)
+    .slice(0, config.MAX_IPS)
+    .map(result => result.ip);
+}
+
 async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain, apiRequest = cfApiRequest }) {
   const currentIps = currentRecords.map(r => r.content);
   const toDelete = currentRecords.filter(r => !finalHealthyIps.includes(r.content));
@@ -520,178 +591,108 @@ async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain
   };
 }
 
-function shouldSyncGistAfterDnsChange(changeResult) {
-  return changeResult.plannedChangeCount > 0 && changeResult.failedChangeCount === 0;
+async function fetchCurrentDnsRecords(config, apiRequest = cfApiRequest) {
+  return apiRequest('GET', `/zones/${config.CF_ZONE_ID}/dns_records?name=${config.CF_DOMAIN}&type=A`);
+}
+
+async function syncOutputs(config, finalHealthyIps, deps = {}) {
+  const fetchDns = deps.fetchCurrentDnsRecords || fetchCurrentDnsRecords;
+  const applyDns = deps.applyDnsChanges || applyDnsChanges;
+  const syncGist = deps.syncGistIpList || syncGistIpList;
+  const outputs = { dns: null, gist: null };
+
+  if (hasCloudflareOutput(config)) {
+    try {
+      const currentRecords = await fetchDns(config, deps.cfApiRequest || cfApiRequest);
+      outputs.dns = await applyDns({
+        currentRecords,
+        finalHealthyIps,
+        zoneId: config.CF_ZONE_ID,
+        domain: config.CF_DOMAIN,
+        apiRequest: deps.cfApiRequest || cfApiRequest,
+      });
+    } catch (error) {
+      console.error(`❌ DNS 同步失败: ${error.message}`);
+    }
+  }
+
+  if (hasGistOutput(config)) {
+    try {
+      outputs.gist = await syncGist(config, finalHealthyIps, deps.gistDeps || {});
+    } catch (error) {
+      console.error(`❌ Gist 同步失败: ${error.message}`);
+    }
+  }
+
+  if (!outputs.dns && !outputs.gist) {
+    console.log('ℹ️ 未配置任何输出目标，仅输出最终 IP 结果。');
+  }
+
+  return outputs;
+}
+
+async function runSync(config = loadRuntimeConfig(), deps = {}) {
+  const loadPool = deps.parseIpPool || parseIpPool;
+  const pickByLatency = deps.selectIpsByLatency || selectIpsByLatency;
+  const pickBySpeed = deps.selectIpsBySpeed || selectIpsBySpeed;
+  const notify = deps.sendNotification || sendNotification;
+  const writeOutputs = deps.syncOutputs || syncOutputs;
+
+  const poolIps = await loadPool(config.CF_IP_POOL);
+  if (poolIps.length === 0) {
+    throw new Error('IP 池为空，无法继续同步');
+  }
+
+  const finalHealthyIps = config.IP_UPDATE_MODE === 'speed'
+    ? await pickBySpeed(poolIps, config, deps)
+    : await pickByLatency(poolIps, config, deps);
+
+  if (finalHealthyIps.length === 0) {
+    await notify('⚠️ CF IP 同步报警', '候选池中没有可用 IP。');
+    return { poolIps, finalHealthyIps, outputs: { dns: null, gist: null } };
+  }
+
+  if (finalHealthyIps.length < config.MAX_IPS && finalHealthyIps.length <= config.NOTIFY_THRESHOLD) {
+    await notify('⚠️ CF IP 池告急', `当前仅剩 ${finalHealthyIps.length} 个可用 IP（目标: ${config.MAX_IPS}）。`);
+  }
+
+  const outputs = await writeOutputs(config, finalHealthyIps, deps);
+  return { poolIps, finalHealthyIps, outputs };
 }
 
 async function main() {
-  const {
-    CF_API_TOKEN,
-    CF_ZONE_ID,
-    CF_DOMAIN,
-    CF_IP_POOL,
-    MAX_IPS,
-    NOTIFY_THRESHOLD,
-    POOL_SAMPLE_COUNT,
-    IP_UPDATE_MODE,
-    GITHUB_TOKEN,
-    GIST_NAME,
-    GIST_SECRET,
-  } = loadRuntimeConfig();
-  console.log(`\n🚀 开始执行 Cloudflare DNS 自动同步（本地池支持版）...`);
+  const config = loadRuntimeConfig();
+  console.log('\n🚀 开始执行 Cloudflare IP 同步...');
   console.log(`数据目录: ${DATA_DIR}`);
-  console.log(`目标域名: ${CF_DOMAIN}`);
+  console.log(`输出模式: ${config.IP_UPDATE_MODE}`);
 
-  if (!CF_API_TOKEN || !CF_ZONE_ID || !CF_DOMAIN) {
-    console.error('❌ 错误: 缺少必要环境变量 (CF_API_TOKEN, CF_ZONE_ID, CF_DOMAIN)');
-    process.exit(1);
-  }
-
-  console.log('\n☁️ 正在获取当前 DNS 解析记录...');
-  let currentRecords;
-  try {
-    currentRecords = await cfApiRequest('GET', `/zones/${CF_ZONE_ID}/dns_records?name=${CF_DOMAIN}&type=A`);
-  } catch (e) {
-    console.error(`❌ 获取记录失败: ${e.message}`);
-    return;
-  }
-
-  const currentIps = currentRecords.map(r => r.content);
-  console.log(`当前在岗 IP: [${currentIps.join(', ') || '无'}]`);
-  console.log(`更新模式: ${IP_UPDATE_MODE}`);
-
-  let finalHealthyIps = [];
-
-  if (IP_UPDATE_MODE === 'latency') {
-    console.log('\n⚖️ latency 模式：统一比较当前 DNS 与候选池的探测延迟...');
-    const poolIps = await parseIpPool(CF_IP_POOL);
-    const candidateIps = buildLatencyCandidateIps(currentIps, poolIps);
-
-    console.log(`🔍 待测试候选 IP 数量: ${candidateIps.length}`);
-    const latencyResults = candidateIps.length > 0
-      ? await Promise.all(candidateIps.map(ip => testIp(ip)))
-      : [];
-
-    finalHealthyIps = pickTopHealthyIps(latencyResults, MAX_IPS);
-    console.log(`📊 latency 优选结果: ${finalHealthyIps.length} 个健康 IP 入选`);
-  } else {
-    let healthyInPlaceEntries = [];
-    if (currentIps.length > 0) {
-      console.log(`⏳ 正在对当前 ${currentIps.length} 个在岗 IP 进行连通性测试...`);
-      const currentTestResults = await Promise.all(currentIps.map(ip => testIp(ip)));
-      healthyInPlaceEntries = sortHealthyEntries(currentTestResults);
-      console.log(`✅ 在岗检测完成: ${healthyInPlaceEntries.length} 个健康, ${currentIps.length - healthyInPlaceEntries.length} 个失效`);
-    }
-
-    if (healthyInPlaceEntries.length >= MAX_IPS) {
-      finalHealthyIps = healthyInPlaceEntries.slice(0, MAX_IPS).map(entry => entry.ip);
-      console.log('✨ 现有健康 IP 足供使用，无需从池中采集。');
-    } else {
-      const gapSize = MAX_IPS - healthyInPlaceEntries.length;
-      console.log(`补充逻辑激活: 当前还缺少 ${gapSize} 个健康 IP`);
-
-      console.log('📥 正在解析候选 IP 池...');
-      const poolIps = await parseIpPool(CF_IP_POOL);
-
-      let candidatePoolIps = poolIps.filter(ip => !currentIps.includes(ip));
-      if (POOL_SAMPLE_COUNT > 0 && candidatePoolIps.length > POOL_SAMPLE_COUNT) {
-        console.log(`🎲 池中 IP 较多 (${candidatePoolIps.length})，随机抽取 ${POOL_SAMPLE_COUNT} 个进行测试...`);
-        shuffleArray(candidatePoolIps);
-        candidatePoolIps = candidatePoolIps.slice(0, POOL_SAMPLE_COUNT);
-      }
-
-      console.log(`🔍 待补充测试 IP 数量: ${candidatePoolIps.length}`);
-
-      const poolResults = candidatePoolIps.length > 0
-        ? await Promise.all(candidatePoolIps.map(ip => testIp(ip)))
-        : [];
-      const healthyPoolEntries = sortHealthyEntries(poolResults);
-
-      if (candidatePoolIps.length > 0) {
-        console.log(`📊 池中优选结果: 发现 ${healthyPoolEntries.length} 个健康 IP`);
-      }
-
-      finalHealthyIps = buildFallbackTargetIps(
-        healthyInPlaceEntries,
-        healthyPoolEntries,
-        MAX_IPS,
-      );
-    }
-  }
-
-  if (finalHealthyIps.length === 0) {
-    console.error('😱 严重警告: 现有记录及候选池中所有 IP 均不可用！');
-    console.error('🚫 脚本已中止，禁止清空 Cloudflare 解析记录。');
-    await sendNotification('⚠️ CF 自动故障转移报警', `域名 ${CF_DOMAIN} 的所有 IP（含池中候选）均已宕机！解析已锁定旧状态以防彻底失联。`);
-    return;
-  }
-
-  if (finalHealthyIps.length < MAX_IPS && finalHealthyIps.length <= NOTIFY_THRESHOLD) {
-    console.warn(`💡 IP 池告急: 当前仅余 ${finalHealthyIps.length} 个健康 IP，无法满足目标 ${MAX_IPS} 个（告警阈值: ${NOTIFY_THRESHOLD}）。`);
-    await sendNotification('⚠️ CF IP 池告急', `域名 ${CF_DOMAIN} 的健康 IP 补位失败，当前仅剩 ${finalHealthyIps.length} 个可用 IP（阈值: ${NOTIFY_THRESHOLD}）。请及时更新 IP 池！`);
-  }
-
-  console.log(`✅ 最终目标 IP 集合: [${finalHealthyIps.join(', ')}]`);
-
-  const changeResult = await applyDnsChanges({
-    currentRecords,
-    finalHealthyIps,
-    zoneId: CF_ZONE_ID,
-    domain: CF_DOMAIN,
-  });
-
-  if (changeResult.plannedChangeCount === 0) {
-    console.log('\n✨ 当前解析记录依然健康且稳定，无变动。');
-    return;
-  }
-
-  if (shouldSyncGistAfterDnsChange(changeResult)) {
-    console.log(`\n🎉 DNS 解析已更新！(高频运行：跳过常规通知)`);
-    console.log(`旧状态: [${changeResult.currentIps.join(', ') || '空'}]`);
-    console.log(`新状态: [${finalHealthyIps.join(', ')}]`);
-
-    if (isGistSyncConfigured({ GITHUB_TOKEN, GIST_NAME })) {
-      try {
-        const gistResult = await syncGistIpList(
-          { GITHUB_TOKEN, GIST_NAME, GIST_SECRET },
-          finalHealthyIps,
-        );
-        console.log(`📝 Gist 已${gistResult.action === 'created' ? '创建' : '更新'}: ${gistResult.gistId}`);
-      } catch (e) {
-        console.error(`❌ Gist 同步失败: ${e.message}`);
-        await sendNotification('⚠️ Gist 同步失败', `域名 ${CF_DOMAIN} 的 DNS 已更新，但 Gist 同步失败：${e.message}`);
-      }
-    } else {
-      console.log('ℹ️ 未配置 GITHUB_TOKEN 或 GIST_NAME，跳过 Gist 同步。');
-    }
-
-    return;
-  }
-
-  console.warn(`⚠️ DNS 变更未全部成功：成功 ${changeResult.successfulChangeCount} 项，失败 ${changeResult.failedChangeCount} 项。已跳过 Gist 同步。`);
+  const result = await runSync(config);
+  console.log(`✅ 最终目标 IP 集合: [${result.finalHealthyIps.join(', ')}]`);
 }
 
 module.exports = {
   applyDnsChanges,
-  buildFallbackTargetIps,
-  buildLatencyCandidateIps,
+  fetchCurrentDnsRecords,
   formatGistIpContent,
-  isGistSyncConfigured,
+  hasCloudflareOutput,
+  hasGistOutput,
   loadRuntimeConfig,
   normalizeIpUpdateMode,
   parseBooleanEnv,
   parseRuntimeConfig,
-  pickTopHealthyIps,
   readGistIdStateFile,
-  shouldSyncGistAfterDnsChange,
+  runSync,
+  selectIpsByLatency,
+  selectIpsBySpeed,
   syncGistIpList,
+  syncOutputs,
   writeGistIdStateFile,
 };
 
 if (require.main === module) {
   main().catch(err => {
     console.error(`\n❌ 脚本全局错误: ${err.message}`);
-    sendNotification('❌ CF 同步脚本崩溃', err.message);
+    sendNotification('❌ CF IP 同步脚本崩溃', err.message);
   });
 }
 

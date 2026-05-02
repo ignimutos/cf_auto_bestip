@@ -38,31 +38,30 @@
 
 ---
 
-### 2) `cf_dns_sync.js` - Cloudflare DNS 自动同步脚本
+### 2) `cf_ip_sync.js` - Cloudflare IP 同步脚本
 
 主要职责：
 
-- ☁️ 读取当前 Cloudflare DNS A 记录
-- ❤️ 对“在岗 IP”做实时健康检查（`/cdn-cgi/trace`）
-- 📚 从 IP 池补充候选（支持 URL、本地文件、直接 IP）
-- 🧪 测试候选可用性并按延迟排序
-- ➕➖ 自动新增/删除 DNS 记录，保持目标数量 `MAX_IPS`
-- 🛡️ 全部不可用时保护机制触发：**不清空 DNS，避免彻底掉线**
+- 📚 从 IP 池读取候选（支持 URL、本地文件、直接 IP）
+- ⚖️ `latency` 模式：对池内全部 IP 做轻量延迟/可用性探测
+- 🚀 `speed` 模式：复用本地 CloudflareST 二进制筛出最快节点
+- ☁️ 可选同步 Cloudflare DNS 解析记录（A 记录）
+- 📝 可选同步最终 IP 列表到 Gist
 - 🚨 IP 不足时触发告警通知
 
-一句话：**负责“让域名解析始终指向健康可用 IP”** 🧭
+一句话：**负责“从候选池选出最终 IP，并同步到已配置的输出目标”** 🧭
 
 ---
 
 ## 🔄 推荐运行流程
 
 1. 先跑 `cfst_test.js` 生成优选池 `data/cfst_preferred_ips.txt`  
-2. 再由 `cf_dns_sync.js` 按高频周期检查并自动同步 DNS
+2. 再由 `cf_ip_sync.js` 按高频周期从池中选出最终 IP 并同步输出目标
 
 可理解为：
 
 - `cfst_test.js` = 选手选拔赛 🏃
-- `cf_dns_sync.js` = 正式比赛实时换人 🧑‍🔧
+- `cf_ip_sync.js` = 从候选名单里持续选出当前最合适的上场节点 🧑‍🔧
 
 ---
 
@@ -88,20 +87,23 @@
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `github_proxy`：下载 CloudflareST 的代理前缀（可选）
 
-### `cf_dns_sync.js` 常用变量
+### `cf_ip_sync.js` 常用变量
 
-- `CF_API_TOKEN`：Cloudflare API Token（必填）
-- `CF_ZONE_ID`：Zone ID（必填）
-- `CF_DOMAIN`：要维护的域名（必填）
 - `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_preferred_ips.txt`
-- `IP_UPDATE_MODE`：更新模式，`fallback` 为默认故障转移模式，`latency` 为统一探测当前 DNS 与池中 IP 后按延迟选优
-- `MAX_IPS`：期望维持的 A 记录数量（默认 2）
+- `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
+- `MAX_IPS`：最终产出的 IP 数量（默认 2）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
-- `POOL_SAMPLE_COUNT`：池过大时随机抽样测试数量（默认 0=不抽样，仅 `fallback` 模式使用）
+- `POOL_SAMPLE_COUNT`：保留兼容，但当前模式下不生效
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
-- `GITHUB_TOKEN`：GitHub Token（可选；与 `GIST_NAME` 同时配置时启用 Gist 同步）
-- `GIST_NAME`：Gist 文件名（可选）
+- `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_DOMAIN`：可选；三者都存在时才同步 DNS
+- `GITHUB_TOKEN` / `GIST_NAME`：可选；两者都存在时才同步 Gist
 - `GIST_SECRET`：是否创建 secret gist（可选；仅 `true` 视为 secret，其它值都按 public 处理）
+- `CFST_LATENCY_THRESHOLD`：`speed` 模式复用的 CloudflareST 延迟阈值（默认 500）
+- `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式复用的下载速度阈值（默认 10）
+- `SPEED_TEST_DURATION_S`：`speed` 模式复用的测速时长秒数（默认 10）
+- `CFST_TEST_COUNT`：`speed` 模式复用的测速候选数量（默认 30）
+- `LATENCY_TEST_CONCURRENCY`：`speed` 模式复用的并发数（默认 200）
+- `CFST_SPEED_TEST_URL`：`speed` 模式复用的 CloudflareST 自定义测速地址（可选）
 
 ---
 
@@ -139,7 +141,7 @@ GIST_SECRET=false
 
 ```bash
 node cfst_test.js
-node cf_dns_sync.js
+node cf_ip_sync.js
 ```
 
 ---
@@ -147,7 +149,7 @@ node cf_dns_sync.js
 ## ⏰ 定时任务建议
 
 - `cfst_test.js`：低频（例如每天/每周）🗓️
-- `cf_dns_sync.js`：高频（例如每 5 分钟）⏱️
+- `cf_ip_sync.js`：高频（例如每 5 分钟）⏱️
 
 这样既能持续刷新优选池，又能及时故障转移。
 
@@ -169,13 +171,13 @@ node cf_dns_sync.js
 你可以直接在青龙容器内执行（成功率最高）：
 
 ```bash
-ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_dns_sync" "README|LICENSE" "config" "" "js|txt"
+ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_ip_sync" "README|LICENSE" "config" "" "js|txt"
 ```
 
 参数含义（不同青龙版本参数个数可能不同；下面以此命令为准）：
 
 - 仓库：`https://github.com/lee1080/cf_auto_bestip.git`
-- 白名单：`cfst_test|cf_dns_sync`（只拉这两个脚本）
+- 白名单：`cfst_test|cf_ip_sync`（只拉这两个脚本）
 - 黑名单：`README|LICENSE`（不拉文档/协议文件）
 - 排除关键字：`config`（避免把 `config` 相关文件当脚本拉取；按你面板规则）
 - 分支/其他参数：留空（`""`）
@@ -186,13 +188,13 @@ ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_dns_sync" "R
 如果你的青龙版本支持「创建订阅 -> 名称」自动解析，可尝试：
 
 ```text
-cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_dns_sync#README|LICENSE#config##js|txt
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_ip_sync#README|LICENSE#config##js|txt
 ```
 
 说明（名称粘贴模式字段顺序）：
 
 - 名称#链接#分支#白名单#黑名单#（其余参数…）
-- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_test|cf_dns_sync`，黑名单 `README|LICENSE`，后缀 `js|txt`
+- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_test|cf_ip_sync`，黑名单 `README|LICENSE`，后缀 `js|txt`
 
 若该模式仍不生效，请优先使用上面的 `ql repo` 命令方式。✅
 
@@ -203,28 +205,27 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_d
 - 优选测速任务（低频）：
   - 命令：`task cf_auto_bestip/cfst_test.js`
 - DNS 同步任务（高频）：
-  - 命令：`task cf_auto_bestip/cf_dns_sync.js`
+  - 命令：`task cf_auto_bestip/cf_ip_sync.js`
 
 ### 3. 定时建议（Cron）
 
 - `cfst_test.js`：`0 23 * * 4`（每周四 23:00，可按需调整）🗓️
-- `cf_dns_sync.js`：`*/5 * * * *`（每 5 分钟）⏱️
+- `cf_ip_sync.js`：`*/5 * * * *`（每 5 分钟）⏱️
 
 ### 4. 环境变量配置
 
-在青龙「环境变量」中至少配置以下项：
+在青龙「环境变量」中建议至少配置以下项：
 
-- `CF_API_TOKEN`
-- `CF_ZONE_ID`
-- `CF_DOMAIN`
 - `IP_SOURCE_URL`（或 `IP_RANDOM_SOURCE_URL`）
+- 若需要 DNS 输出：`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_DOMAIN`
+- 若需要 Gist 输出：`GITHUB_TOKEN`、`GIST_NAME`
 
 如果你直接在仓库内维护 `config.txt`（且已脱敏），脚本也会自动读取。✅
 
 ### 5. 运行顺序建议
 
 - 先手动执行一次 `cfst_test.js`，确认生成 `data/cfst_preferred_ips.txt`
-- 再执行 `cf_dns_sync.js`，确认 DNS 可正常更新
+- 再执行 `cf_ip_sync.js`，确认 DNS 可正常更新
 - 最后开启定时任务自动运行 🔁
 
 ---
@@ -238,7 +239,7 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_d
 - `cfst_preferred_ips.txt` - 优选 IP 池（供 DNS 同步脚本消费）
 - `cfst_ips.txt` - 本次测试输入 IP 临时文件
 - `result.csv` - CloudflareST 原始结果
-- `cf_dns_sync_gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
+- `cf_ip_sync_gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
 
 ---
 
