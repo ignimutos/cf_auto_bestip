@@ -44,7 +44,7 @@
 
 - 📚 从 IP 池读取候选（支持 URL、本地文件、直接 IP）
 - ⚖️ `latency` 模式：对池内全部 IP 做轻量延迟/可用性探测
-- 🚀 `speed` 模式：复用本地 CloudflareST 二进制筛出最快节点
+- 🚀 `speed` 模式：先做轻量探活，再仅对延迟最低的少量候选复用本地 CloudflareST 二进制测速
 - ☁️ 可选同步 Cloudflare DNS 解析记录（A 记录）
 - 📝 可选同步最终 IP 列表到 Gist
 - 🚨 IP 不足时触发告警通知
@@ -81,7 +81,7 @@
 - `CFST_LATENCY_THRESHOLD`：延迟阈值 ms（默认 500）
 - `DOWNLOAD_SPEED_THRESHOLD_MBPS`：下载速度阈值（默认 10）
 - `SPEED_TEST_DURATION_S`：测速时长秒（默认 10）
-- `CFST_TEST_COUNT`：测速保留数量（默认 30）
+- `CFST_TEST_COUNT`：参与下载测速的候选数量（默认 30）
 - `PREFERRED_IP_COUNT`：最终优选保存数量（默认 10）
 - `CFST_SPEED_TEST_URL`：CloudflareST 自定义测速地址（可选）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
@@ -91,19 +91,19 @@
 
 - `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_preferred_ips.txt`
 - `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
-- `MAX_IPS`：最终产出的 IP 数量（默认 2）
+- `MAX_IPS`：最终产出的 IP 数量（代码默认 2；你也可以在 `config.txt` 里按需改大）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
 - `POOL_SAMPLE_COUNT`：保留兼容，但当前模式下不生效
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_DOMAIN`：可选；三者都存在时才同步 DNS
 - `GITHUB_TOKEN` / `GIST_NAME`：可选；两者都存在时才同步 Gist
 - `GIST_SECRET`：是否创建 secret gist（可选；仅 `true` 视为 secret，其它值都按 public 处理）
-- `CFST_LATENCY_THRESHOLD`：`speed` 模式复用的 CloudflareST 延迟阈值（默认 500）
-- `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式复用的下载速度阈值（默认 10）
-- `SPEED_TEST_DURATION_S`：`speed` 模式复用的测速时长秒数（默认 10）
-- `CFST_TEST_COUNT`：`speed` 模式复用的测速候选数量（默认 30）
-- `LATENCY_TEST_CONCURRENCY`：`speed` 模式复用的并发数（默认 200）
-- `CFST_SPEED_TEST_URL`：`speed` 模式复用的 CloudflareST 自定义测速地址（可选）
+- `CFST_LATENCY_THRESHOLD`：`speed` 模式第二阶段复用的 CloudflareST 延迟阈值（默认 500）
+- `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式第二阶段复用的下载速度阈值（默认 10）
+- `SPEED_TEST_DURATION_S`：`speed` 模式基础测速时长（默认 10）；实际传给 CloudflareST 时会取 `max(3, floor(该值/2))`
+- `CFST_TEST_COUNT`：兼容保留；`speed` 模式实际只会把探活成功后按延迟排序的前 `MAX_IPS * 3` 个候选交给 CloudflareST
+- `LATENCY_TEST_CONCURRENCY`：`speed` 模式第二阶段复用的并发数（默认 200）
+- `CFST_SPEED_TEST_URL`：`speed` 模式第二阶段复用的 CloudflareST 自定义测速地址（可选）
 
 ---
 

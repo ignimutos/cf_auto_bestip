@@ -172,7 +172,7 @@ function formatLatencySelectionSummary(selection) {
 
 function formatSpeedSelectionSummary(selection) {
   return [
-    '📊 Speed 全量测速结果:',
+    '📊 Speed 候选测速结果:',
     ...selection.allResults.map((result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`),
     '✅ Speed 最终保留结果:',
     ...selection.finalResults.map((result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`),
@@ -604,7 +604,27 @@ function buildSpeedSelection(results, maxIps) {
   };
 }
 
+function getSpeedModeDurationSeconds(durationSeconds) {
+  return Math.max(3, Math.floor(Number(durationSeconds) / 2));
+}
+
+function getSpeedModeCandidateCount(maxIps) {
+  return Math.max(1, Number(maxIps) * 3);
+}
+
 async function selectIpsBySpeed(poolIps, config, deps = {}) {
+  const probe = deps.testIp || testIp;
+  const probeResults = poolIps.length > 0
+    ? await Promise.all(poolIps.map(ip => probe(ip)))
+    : [];
+  const candidates = sortHealthyEntries(probeResults)
+    .slice(0, getSpeedModeCandidateCount(config.MAX_IPS))
+    .map(result => result.ip);
+
+  if (candidates.length === 0) {
+    return buildSpeedSelection([], config.MAX_IPS);
+  }
+
   const dataDir = deps.dataDir || DATA_DIR;
   const inputFilePath = path.join(dataDir, 'cf_ip_sync_cfst_ips.txt');
   const resultCsvPath = path.join(dataDir, 'result.csv');
@@ -614,11 +634,16 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     throw new Error('未找到 CloudflareST，可先运行 cfst_test.js');
   }
 
-  fs.writeFileSync(inputFilePath, poolIps.join('\n'), 'utf8');
+  fs.writeFileSync(inputFilePath, candidates.join('\n'), 'utf8');
   if (fs.existsSync(resultCsvPath)) fs.unlinkSync(resultCsvPath);
 
   const runCfst = deps.runCfst || defaultRunCfst;
-  await runCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, config });
+  const speedConfig = {
+    ...config,
+    SPEED_TEST_DURATION_S: getSpeedModeDurationSeconds(config.SPEED_TEST_DURATION_S),
+    CFST_TEST_COUNT: candidates.length,
+  };
+  await runCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, config: speedConfig });
 
   return buildSpeedSelection(parseCfstCsvResults(resultCsvPath), config.MAX_IPS);
 }
@@ -809,6 +834,8 @@ module.exports = {
   formatSpeedSelectionSummary,
   getMissingCloudflareOutputConfig,
   getMissingGistOutputConfig,
+  getSpeedModeCandidateCount,
+  getSpeedModeDurationSeconds,
   hasCloudflareOutput,
   hasGistOutput,
   loadRuntimeConfig,

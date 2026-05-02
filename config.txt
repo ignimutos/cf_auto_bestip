@@ -7,31 +7,33 @@
 ## CFST 自动测速（cfst_test.js）
 ## ================================
 
-# 全量测试 IP 库 URL（可多个，逗号分隔）
+# 固定候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
 export IP_SOURCE_URL="./data/valid_ips.txt,https://api.uouin.com/cloudflare.html"
 
-# 随机采样 IP 库 URL（可多个，逗号分隔）
+# 随机候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
 export IP_RANDOM_SOURCE_URL="https://zip.cm.edu.kg/all.txt,https://ip.164746.xyz"
 
-# 随机采样数量
-export IP_RANDOM_SAMPLE_COUNT=800
+# 随机采样数量（默认 300）
+export IP_RANDOM_SAMPLE_COUNT=300
 
-# 下载速度门槛（MB/s）
-export DOWNLOAD_SPEED_THRESHOLD_MBPS=8
+# 下载速度门槛（MB/s，默认 10）
+export DOWNLOAD_SPEED_THRESHOLD_MBPS=10
 
-# 每个节点测速持续时间（秒）
+# 每个节点测速持续时间（秒，默认 10）
+# 在 cf_ip_sync.js 的 speed 模式下，实际传给 CloudflareST 的值会取 max(3, floor(该值/2))
 export SPEED_TEST_DURATION_S=10
 
-# 最终保存优选 IP 数量
-export PREFERRED_IP_COUNT=20
+# 最终保存优选 IP 数量（默认 10）
+export PREFERRED_IP_COUNT=10
 
-# CloudflareST 实际参与下载测速的节点数量
+# CloudflareST 参与下载测速的候选数量（默认 30）
+# 在 cf_ip_sync.js 的 speed 模式下，实际会固定改为探活成功后延迟最低的前 MAX_IPS*3 个候选
 export CFST_TEST_COUNT=30
 
-# CloudflareST 专属延迟阈值（毫秒）
+# CloudflareST 延迟阈值（毫秒，默认 500）
 export CFST_LATENCY_THRESHOLD=500
 
-# CloudflareST 专属测速地址（可选）
+# CloudflareST 自定义测速地址（可选）
 export CFST_SPEED_TEST_URL=
 
 # GitHub 加速代理地址（可选）
@@ -42,7 +44,7 @@ export LOCAL_DATA_DIR=./data
 
 
 ## ================================
-## Cloudflare DNS 同步（cf_dns_sync.js）
+## Cloudflare IP 同步（cf_ip_sync.js）
 ## ================================
 
 # Cloudflare API Token
@@ -62,17 +64,18 @@ export CF_DOMAIN=
 export CF_IP_POOL=./data/cfst_preferred_ips.txt
 
 # 更新模式：
-# - fallback：默认模式，优先保留当前健康解析，不足时再从池中补位
-# - latency：把当前 DNS 和候选池一起探测，选择延迟最低的健康 IP
-export IP_UPDATE_MODE=fallback
+# - latency：对候选池全部 IP 做轻量探活，选择延迟最低的健康 IP
+# - speed：先轻量探活并剔除失败 IP，再只对延迟最低的前 MAX_IPS*3 个候选做 CloudflareST 下载测速
+# 其它值都会按 latency 处理
+export IP_UPDATE_MODE=latency
 
-# 最终保留在 DNS 解析中的健康 IP 数量
-export MAX_IPS=5
+# 最终保留在 DNS 解析中的健康 IP 数量（默认 2）
+export MAX_IPS=2
 
 # 告警阈值（健康 IP <= 该值 且不足 MAX_IPS 时触发）
 export NOTIFY_THRESHOLD=2
 
-# 每轮从池中随机抽样测试数量（0=全测，仅 fallback 模式使用）
+# 兼容保留，当前模式下不生效
 export POOL_SAMPLE_COUNT=0
 
 # GitHub Token（与 GIST_NAME 同时存在时启用 Gist 同步）
@@ -84,5 +87,5 @@ export GIST_NAME=
 # 是否创建 secret gist（仅 true 视为 secret；否则为 public）
 export GIST_SECRET=false
 
-# 首次创建后返回的 gist id 会自动保存到 ./data/cf_dns_sync_gist_id.txt
+# 首次创建后返回的 gist id 会自动保存到 ./data/cf_ip_sync_gist_id.txt
 
