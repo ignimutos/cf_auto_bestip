@@ -135,16 +135,64 @@ function parseBooleanEnv(rawValue) {
   return String(rawValue || '').trim().toLowerCase() === 'true';
 }
 
+function getMissingCloudflareOutputConfig(config) {
+  return ['CF_API_TOKEN', 'CF_ZONE_ID', 'CF_DOMAIN'].filter((key) => !config[key]);
+}
+
+function getMissingGistOutputConfig(config) {
+  return ['GITHUB_TOKEN', 'GIST_NAME'].filter((key) => !config[key]);
+}
+
 function hasCloudflareOutput(config) {
-  return Boolean(config.CF_API_TOKEN && config.CF_ZONE_ID && config.CF_DOMAIN);
+  return getMissingCloudflareOutputConfig(config).length === 0;
 }
 
 function hasGistOutput(config) {
-  return Boolean(config.GITHUB_TOKEN && config.GIST_NAME);
+  return getMissingGistOutputConfig(config).length === 0;
 }
 
 function formatGistIpContent(ips) {
   return ips.join('\n');
+}
+
+function formatInputSourceSummary({ directCount, urlCount, fileCount }) {
+  return `📋 输入来源: 直接 IP ${directCount} 个 | 远程 URL ${urlCount} 个 | 本地文件 ${fileCount} 个`;
+}
+
+function formatLatencySelectionSummary(selection) {
+  return [
+    '📊 Latency 全量探测结果:',
+    ...selection.allResults.map((result) => result.success
+      ? `   - ${result.ip} | ${result.latency} ms`
+      : `   - ${result.ip} | ${result.reason || 'failed'}`),
+    '✅ Latency 最终保留结果:',
+    ...selection.finalResults.map((result) => `   - ${result.ip} | ${result.latency} ms`),
+  ];
+}
+
+function formatSpeedSelectionSummary(selection) {
+  return [
+    '📊 Speed 全量测速结果:',
+    ...selection.allResults.map((result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`),
+    '✅ Speed 最终保留结果:',
+    ...selection.finalResults.map((result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`),
+  ];
+}
+
+function formatDnsOutputSummary(output) {
+  if (!output.triggered) {
+    return `ℹ️ Cloudflare DNS: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
+  }
+  if (!output.result) return '';
+  return `☁️ Cloudflare DNS 结果: 当前 ${output.result.currentIps.length} 条 | 计划新增 ${output.result.toAdd.length} | 计划删除 ${output.result.toDelete.length} | 成功 ${output.result.successfulChangeCount} | 失败 ${output.result.failedChangeCount}`;
+}
+
+function formatGistOutputSummary(output) {
+  if (!output.triggered) {
+    return `ℹ️ Gist: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
+  }
+  if (!output.result) return '';
+  return `📝 Gist 结果: ${output.result.action} | gistId ${output.result.gistId} | 文件 ${output.filename}`;
 }
 
 function readGistIdStateFile(filePath = GIST_ID_STATE_FILE) {
@@ -228,7 +276,7 @@ function fetchIpsFromUrl(url) {
       res.on('end', () => {
         const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
         const ips = data.match(ipRegex) || [];
-        console.log(`  ✅ 从 ${url} 获取到 ${ips.length} 个 IP`);
+        console.log(`   ✅ 远程 URL: ${url} -> ${ips.length} 个 IP`);
         resolve(ips);
       });
     }).on('error', (e) => {
@@ -244,7 +292,7 @@ function readIpsFromLocalFile(filePath) {
     const data = fs.readFileSync(filePath, 'utf8');
     const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
     const ips = data.match(ipRegex) || [];
-    console.log(`  ✅ 从本地文件 ${filePath} 读取到 ${ips.length} 个 IP`);
+    console.log(`   ✅ 本地文件: ${filePath} -> ${ips.length} 个 IP`);
     return ips;
   } catch (e) {
     console.warn(`  ⚠️ 读取本地文件失败 ${filePath}: ${e.message}`);
@@ -293,7 +341,11 @@ async function parseIpPool(poolStr) {
     }
   }
 
-  console.log(`📋 直接 IP: ${directIps.length} 个, 远程 URL: ${urlItems.length} 个, 本地文件: ${fileItems.length} 个`);
+  console.log(formatInputSourceSummary({
+    directCount: directIps.length,
+    urlCount: urlItems.length,
+    fileCount: fileItems.length,
+  }));
 
   const remoteResults = await Promise.all(urlItems.map(url => fetchIpsFromUrl(url)));
   const remoteIps = remoteResults.flat();
@@ -513,15 +565,43 @@ function sortHealthyEntries(results) {
     .sort((a, b) => a.latency - b.latency);
 }
 
+function buildLatencySelection(results, maxIps) {
+  const healthyResults = sortHealthyEntries(results);
+  const failedResults = results
+    .filter(result => !result.success)
+    .map(result => ({
+      ip: result.ip,
+      success: false,
+      reason: result.reason || 'failed',
+    }));
+  const finalResults = healthyResults.slice(0, maxIps);
+
+  return {
+    mode: 'latency',
+    allResults: [...healthyResults, ...failedResults],
+    finalResults,
+    finalHealthyIps: finalResults.map(result => result.ip),
+  };
+}
+
 async function selectIpsByLatency(poolIps, config, deps = {}) {
   const probe = deps.testIp || testIp;
   const results = poolIps.length > 0
     ? await Promise.all(poolIps.map(ip => probe(ip)))
     : [];
 
-  return sortHealthyEntries(results)
-    .slice(0, config.MAX_IPS)
-    .map(entry => entry.ip);
+  return buildLatencySelection(results, config.MAX_IPS);
+}
+
+function buildSpeedSelection(results, maxIps) {
+  const finalResults = results.slice(0, maxIps);
+
+  return {
+    mode: 'speed',
+    allResults: results,
+    finalResults,
+    finalHealthyIps: finalResults.map(result => result.ip),
+  };
 }
 
 async function selectIpsBySpeed(poolIps, config, deps = {}) {
@@ -540,9 +620,7 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
   const runCfst = deps.runCfst || defaultRunCfst;
   await runCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, config });
 
-  return parseCfstCsvResults(resultCsvPath)
-    .slice(0, config.MAX_IPS)
-    .map(result => result.ip);
+  return buildSpeedSelection(parseCfstCsvResults(resultCsvPath), config.MAX_IPS);
 }
 
 async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain, apiRequest = cfApiRequest }) {
@@ -599,12 +677,28 @@ async function syncOutputs(config, finalHealthyIps, deps = {}) {
   const fetchDns = deps.fetchCurrentDnsRecords || fetchCurrentDnsRecords;
   const applyDns = deps.applyDnsChanges || applyDnsChanges;
   const syncGist = deps.syncGistIpList || syncGistIpList;
-  const outputs = { dns: null, gist: null };
+  const outputs = {
+    dns: {
+      triggered: false,
+      missingConfig: getMissingCloudflareOutputConfig(config),
+      result: null,
+      error: null,
+    },
+    gist: {
+      triggered: false,
+      missingConfig: getMissingGistOutputConfig(config),
+      result: null,
+      error: null,
+      filename: config.GIST_NAME || '',
+    },
+  };
 
-  if (hasCloudflareOutput(config)) {
+  if (outputs.dns.missingConfig.length === 0) {
+    console.log('☁️ Cloudflare DNS: 已触发');
+    outputs.dns.triggered = true;
     try {
       const currentRecords = await fetchDns(config, deps.cfApiRequest || cfApiRequest);
-      outputs.dns = await applyDns({
+      outputs.dns.result = await applyDns({
         currentRecords,
         finalHealthyIps,
         zoneId: config.CF_ZONE_ID,
@@ -612,19 +706,29 @@ async function syncOutputs(config, finalHealthyIps, deps = {}) {
         apiRequest: deps.cfApiRequest || cfApiRequest,
       });
     } catch (error) {
+      outputs.dns.error = error.message;
       console.error(`❌ DNS 同步失败: ${error.message}`);
     }
   }
 
-  if (hasGistOutput(config)) {
+  if (outputs.gist.missingConfig.length === 0) {
+    console.log('📝 Gist: 已触发');
+    outputs.gist.triggered = true;
     try {
-      outputs.gist = await syncGist(config, finalHealthyIps, deps.gistDeps || {});
+      outputs.gist.result = await syncGist(config, finalHealthyIps, deps.gistDeps || {});
     } catch (error) {
+      outputs.gist.error = error.message;
       console.error(`❌ Gist 同步失败: ${error.message}`);
     }
   }
 
-  if (!outputs.dns && !outputs.gist) {
+  const dnsSummary = formatDnsOutputSummary(outputs.dns);
+  if (dnsSummary) console.log(dnsSummary);
+
+  const gistSummary = formatGistOutputSummary(outputs.gist);
+  if (gistSummary) console.log(gistSummary);
+
+  if (!outputs.dns.triggered && !outputs.gist.triggered) {
     console.log('ℹ️ 未配置任何输出目标，仅输出最终 IP 结果。');
   }
 
@@ -643,13 +747,33 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
     throw new Error('IP 池为空，无法继续同步');
   }
 
-  const finalHealthyIps = config.IP_UPDATE_MODE === 'speed'
+  const selection = config.IP_UPDATE_MODE === 'speed'
     ? await pickBySpeed(poolIps, config, deps)
     : await pickByLatency(poolIps, config, deps);
+  const finalHealthyIps = selection.finalHealthyIps;
 
   if (finalHealthyIps.length === 0) {
     await notify('⚠️ CF IP 同步报警', '候选池中没有可用 IP。');
-    return { poolIps, finalHealthyIps, outputs: { dns: null, gist: null } };
+    return {
+      poolIps,
+      selection,
+      finalHealthyIps,
+      outputs: {
+        dns: {
+          triggered: false,
+          missingConfig: getMissingCloudflareOutputConfig(config),
+          result: null,
+          error: null,
+        },
+        gist: {
+          triggered: false,
+          missingConfig: getMissingGistOutputConfig(config),
+          result: null,
+          error: null,
+          filename: config.GIST_NAME || '',
+        },
+      },
+    };
   }
 
   if (finalHealthyIps.length < config.MAX_IPS && finalHealthyIps.length <= config.NOTIFY_THRESHOLD) {
@@ -657,7 +781,7 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   }
 
   const outputs = await writeOutputs(config, finalHealthyIps, deps);
-  return { poolIps, finalHealthyIps, outputs };
+  return { poolIps, selection, finalHealthyIps, outputs };
 }
 
 async function main() {
@@ -667,13 +791,24 @@ async function main() {
   console.log(`输出模式: ${config.IP_UPDATE_MODE}`);
 
   const result = await runSync(config);
+  const selectionLines = result.selection.mode === 'speed'
+    ? formatSpeedSelectionSummary(result.selection)
+    : formatLatencySelectionSummary(result.selection);
+  for (const line of selectionLines) console.log(line);
   console.log(`✅ 最终目标 IP 集合: [${result.finalHealthyIps.join(', ')}]`);
 }
 
 module.exports = {
   applyDnsChanges,
   fetchCurrentDnsRecords,
+  formatDnsOutputSummary,
   formatGistIpContent,
+  formatGistOutputSummary,
+  formatInputSourceSummary,
+  formatLatencySelectionSummary,
+  formatSpeedSelectionSummary,
+  getMissingCloudflareOutputConfig,
+  getMissingGistOutputConfig,
   hasCloudflareOutput,
   hasGistOutput,
   loadRuntimeConfig,
