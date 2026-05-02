@@ -179,6 +179,17 @@ function formatSpeedSelectionSummary(selection) {
   ];
 }
 
+function formatSelectionOutput(selection) {
+  const summaryLines = selection.mode === 'speed'
+    ? formatSpeedSelectionSummary(selection)
+    : formatLatencySelectionSummary(selection);
+
+  return [
+    ...summaryLines,
+    `✅ 最终目标 IP 集合: [${selection.finalHealthyIps.join(', ')}]`,
+  ].join('\n');
+}
+
 function formatDnsOutputSummary(output) {
   if (!output.triggered) {
     return `ℹ️ Cloudflare DNS: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
@@ -816,11 +827,7 @@ async function main() {
   console.log(`输出模式: ${config.IP_UPDATE_MODE}`);
 
   const result = await runSync(config);
-  const selectionLines = result.selection.mode === 'speed'
-    ? formatSpeedSelectionSummary(result.selection)
-    : formatLatencySelectionSummary(result.selection);
-  for (const line of selectionLines) console.log(line);
-  console.log(`✅ 最终目标 IP 集合: [${result.finalHealthyIps.join(', ')}]`);
+  console.log(formatSelectionOutput(result.selection));
 }
 
 module.exports = {
@@ -831,6 +838,7 @@ module.exports = {
   formatGistOutputSummary,
   formatInputSourceSummary,
   formatLatencySelectionSummary,
+  formatSelectionOutput,
   formatSpeedSelectionSummary,
   getMissingCloudflareOutputConfig,
   getMissingGistOutputConfig,
