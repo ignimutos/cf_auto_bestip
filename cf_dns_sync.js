@@ -482,17 +482,6 @@ async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain
   let successfulChangeCount = 0;
   let failedChangeCount = 0;
 
-  for (const record of toDelete) {
-    console.log(`🗑️ 正在移除记录: ${record.content} ...`);
-    try {
-      await apiRequest('DELETE', `/zones/${zoneId}/dns_records/${record.id}`, null);
-      successfulChangeCount++;
-    } catch (e) {
-      failedChangeCount++;
-      console.error(`❌ 删除失败: ${e.message}`);
-    }
-  }
-
   for (const ip of toAdd) {
     console.log(`➕ 正在新增解析: ${ip} ...`);
     try {
@@ -507,6 +496,17 @@ async function applyDnsChanges({ currentRecords, finalHealthyIps, zoneId, domain
     } catch (e) {
       failedChangeCount++;
       console.error(`❌ 添加失败: ${e.message}`);
+    }
+  }
+
+  for (const record of toDelete) {
+    console.log(`🗑️ 正在移除记录: ${record.content} ...`);
+    try {
+      await apiRequest('DELETE', `/zones/${zoneId}/dns_records/${record.id}`, null);
+      successfulChangeCount++;
+    } catch (e) {
+      failedChangeCount++;
+      console.error(`❌ 删除失败: ${e.message}`);
     }
   }
 
