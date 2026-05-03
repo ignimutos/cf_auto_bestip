@@ -47,9 +47,12 @@
 - 🚀 `speed` 模式：先做轻量探活，再仅对延迟最低的少量候选复用本地 CloudflareST 二进制测速
 - ☁️ 可选同步 Cloudflare DNS 解析记录（A 记录）
 - 📝 可选同步最终 IP 列表到 Gist
+- 📦 可选上传最终 IP 列表到 S3/R2 兼容对象存储
 - 🚨 IP 不足时触发告警通知
 
 一句话：**负责“从候选池选出最终 IP，并同步到已配置的输出目标”** 🧭
+
+若同时配置 DNS、Gist、S3/R2，`cf_ip_sync.js` 会并行执行三种输出，并分别汇总结果。
 
 ---
 
@@ -98,6 +101,8 @@
 - `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_DOMAIN`：可选；三者都存在时才同步 DNS
 - `GITHUB_TOKEN` / `GIST_NAME`：可选；两者都存在时才同步 Gist
 - `GIST_SECRET`：是否创建 secret gist（可选；仅 `true` 视为 secret，其它值都按 public 处理）
+- `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` / `S3_KEY` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`：可选；六者都存在时才同步 S3/R2
+- `S3_ALLOW_HTTP`：可选；默认 `false`，仅本地调试 MinIO 等明文 HTTP 场景才设为 `true`
 - `CFST_LATENCY_THRESHOLD`：`speed` 模式第二阶段复用的 CloudflareST 延迟阈值（默认 500）
 - `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式第二阶段复用的下载速度阈值（默认 10）
 - `SPEED_TEST_DURATION_S`：`speed` 模式基础测速时长（默认 10）；实际传给 CloudflareST 时会取 `max(3, floor(该值/2))`
@@ -135,6 +140,12 @@ MAX_IPS=2
 GITHUB_TOKEN=your_github_token
 GIST_NAME=cf_ips.txt
 GIST_SECRET=false
+S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_BUCKET=cloudflare-ips
+S3_KEY=best-ip.txt
+S3_ACCESS_KEY_ID=your_access_key_id
+S3_SECRET_ACCESS_KEY=your_secret_access_key
 ```
 
 ### 3. 运行脚本

@@ -16,6 +16,7 @@ const os = require('os');
 const { spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 // ================================
 // 兼容青龙/本地配置自动加载变量
@@ -143,12 +144,21 @@ function getMissingGistOutputConfig(config) {
   return ['GITHUB_TOKEN', 'GIST_NAME'].filter((key) => !config[key]);
 }
 
+function getMissingS3OutputConfig(config) {
+  return ['S3_ENDPOINT', 'S3_REGION', 'S3_BUCKET', 'S3_KEY', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY']
+    .filter((key) => !config[key]);
+}
+
 function hasCloudflareOutput(config) {
   return getMissingCloudflareOutputConfig(config).length === 0;
 }
 
 function hasGistOutput(config) {
   return getMissingGistOutputConfig(config).length === 0;
+}
+
+function hasS3Output(config) {
+  return getMissingS3OutputConfig(config).length === 0;
 }
 
 function formatGistIpContent(ips) {
@@ -194,6 +204,9 @@ function formatDnsOutputSummary(output) {
   if (!output.triggered) {
     return `ℹ️ Cloudflare DNS: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
   }
+  if (output.error) {
+    return `❌ Cloudflare DNS: ${output.error}`;
+  }
   if (!output.result) return '';
   return `☁️ Cloudflare DNS 结果: 当前 ${output.result.currentIps.length} 条 | 计划新增 ${output.result.toAdd.length} | 计划删除 ${output.result.toDelete.length} | 成功 ${output.result.successfulChangeCount} | 失败 ${output.result.failedChangeCount}`;
 }
@@ -202,8 +215,22 @@ function formatGistOutputSummary(output) {
   if (!output.triggered) {
     return `ℹ️ Gist: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
   }
+  if (output.error) {
+    return `❌ Gist: 同步失败 | 文件 ${output.filename} | ${output.error}`;
+  }
   if (!output.result) return '';
   return `📝 Gist 结果: ${output.result.action} | gistId ${output.result.gistId} | 文件 ${output.filename}`;
+}
+
+function formatS3OutputSummary(output) {
+  if (!output.triggered) {
+    return `ℹ️ S3: 已跳过，缺少配置: ${output.missingConfig.join(', ')}`;
+  }
+  if (output.error) {
+    return `❌ S3: 上传失败 | bucket ${output.bucket} | key ${output.key} | ${output.error}`;
+  }
+  if (!output.result) return '';
+  return `📦 S3 结果: ${output.result.action} | bucket ${output.result.bucket} | key ${output.result.key}`;
 }
 
 function readGistIdStateFile(filePath = GIST_ID_STATE_FILE) {
@@ -214,6 +241,131 @@ function readGistIdStateFile(filePath = GIST_ID_STATE_FILE) {
 function writeGistIdStateFile(gistId, filePath = GIST_ID_STATE_FILE) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${gistId}\n`, 'utf8');
+}
+
+function sha256Hex(input) {
+  return crypto.createHash('sha256').update(input).digest('hex');
+}
+
+function hmacSha256(key, value, encoding) {
+  return crypto.createHmac('sha256', key).update(value).digest(encoding);
+}
+
+function getSignatureKey(secretKey, dateStamp, region, service) {
+  const kDate = hmacSha256(`AWS4${secretKey}`, dateStamp);
+  const kRegion = hmacSha256(kDate, region);
+  const kService = hmacSha256(kRegion, service);
+  return hmacSha256(kService, 'aws4_request');
+}
+
+function encodeS3PathPart(part) {
+  return encodeURIComponent(part).replace(/%2F/g, '/');
+}
+
+function buildS3PutObjectRequest(config, content, now = new Date()) {
+  const endpoint = new URL(config.S3_ENDPOINT);
+  if (endpoint.protocol !== 'https:' && !config.S3_ALLOW_HTTP) {
+    throw new Error('S3_ENDPOINT must use https unless S3_ALLOW_HTTP=true');
+  }
+
+  const body = content;
+  const amzDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const dateStamp = amzDate.slice(0, 8);
+  const endpointPathPrefix = endpoint.pathname && endpoint.pathname !== '/'
+    ? endpoint.pathname.replace(/\/+$/, '')
+    : '';
+  const canonicalUri = `${endpointPathPrefix}/${encodeURIComponent(config.S3_BUCKET)}/${config.S3_KEY.split('/').map(encodeS3PathPart).join('/')}`;
+  const host = endpoint.host;
+  const payloadHash = sha256Hex(body);
+  const headers = {
+    'cache-control': 'no-cache, max-age=0',
+    'content-type': 'text/plain',
+    host,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  const signedHeaders = Object.keys(headers).sort().join(';');
+  const canonicalHeaders = Object.keys(headers)
+    .sort()
+    .map((key) => `${key}:${headers[key]}\n`)
+    .join('');
+  const canonicalRequest = [
+    'PUT',
+    canonicalUri,
+    '',
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+  const credentialScope = `${dateStamp}/${config.S3_REGION}/s3/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest),
+  ].join('\n');
+  const signingKey = getSignatureKey(config.S3_SECRET_ACCESS_KEY, dateStamp, config.S3_REGION, 's3');
+  const signature = hmacSha256(signingKey, stringToSign, 'hex');
+
+  return {
+    protocol: endpoint.protocol,
+    hostname: endpoint.hostname,
+    port: endpoint.port || '',
+    method: 'PUT',
+    path: canonicalUri,
+    body,
+    headers: {
+      ...headers,
+      authorization: `AWS4-HMAC-SHA256 Credential=${config.S3_ACCESS_KEY_ID}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+    },
+  };
+}
+
+function uploadS3Request(request) {
+  const transport = request.protocol === 'http:' ? http : https;
+  return new Promise((resolve, reject) => {
+    const req = transport.request(
+      {
+        hostname: request.hostname,
+        port: request.port || undefined,
+        method: request.method,
+        path: request.path,
+        headers: request.headers,
+      },
+      (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          raw += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve({ statusCode: res.statusCode, body: raw });
+            return;
+          }
+          reject(new Error(`HTTP ${res.statusCode}${raw ? ` ${raw}` : ''}`));
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(request.body);
+    req.end();
+  });
+}
+
+async function syncS3IpList(config, finalHealthyIps, deps = {}) {
+  const request = buildS3PutObjectRequest(
+    config,
+    formatGistIpContent(finalHealthyIps),
+    deps.now ? deps.now() : new Date(),
+  );
+  const upload = deps.uploadS3Request || uploadS3Request;
+  await upload(request);
+  return {
+    action: 'uploaded',
+    bucket: config.S3_BUCKET,
+    key: config.S3_KEY,
+  };
 }
 
 function parseRuntimeConfig(env) {
@@ -229,6 +381,13 @@ function parseRuntimeConfig(env) {
     GITHUB_TOKEN: env.GITHUB_TOKEN,
     GIST_NAME: (env.GIST_NAME || '').trim(),
     GIST_SECRET: parseBooleanEnv(env.GIST_SECRET),
+    S3_ENDPOINT: (env.S3_ENDPOINT || '').trim(),
+    S3_REGION: (env.S3_REGION || '').trim(),
+    S3_BUCKET: (env.S3_BUCKET || '').trim(),
+    S3_KEY: (env.S3_KEY || '').trim(),
+    S3_ACCESS_KEY_ID: (env.S3_ACCESS_KEY_ID || '').trim(),
+    S3_SECRET_ACCESS_KEY: (env.S3_SECRET_ACCESS_KEY || '').trim(),
+    S3_ALLOW_HTTP: parseBooleanEnv(env.S3_ALLOW_HTTP),
     CFST_LATENCY_THRESHOLD: parseInt(env.CFST_LATENCY_THRESHOLD, 10) || 500,
     DOWNLOAD_SPEED_THRESHOLD_MBPS: parseFloat(env.DOWNLOAD_SPEED_THRESHOLD_MBPS) || 10,
     SPEED_TEST_DURATION_S: parseInt(env.SPEED_TEST_DURATION_S, 10) || 10,
@@ -709,11 +868,8 @@ async function fetchCurrentDnsRecords(config, apiRequest = cfApiRequest) {
   return apiRequest('GET', `/zones/${config.CF_ZONE_ID}/dns_records?name=${config.CF_DOMAIN}&type=A`);
 }
 
-async function syncOutputs(config, finalHealthyIps, deps = {}) {
-  const fetchDns = deps.fetchCurrentDnsRecords || fetchCurrentDnsRecords;
-  const applyDns = deps.applyDnsChanges || applyDnsChanges;
-  const syncGist = deps.syncGistIpList || syncGistIpList;
-  const outputs = {
+function buildOutputStates(config) {
+  return {
     dns: {
       triggered: false,
       missingConfig: getMissingCloudflareOutputConfig(config),
@@ -727,44 +883,110 @@ async function syncOutputs(config, finalHealthyIps, deps = {}) {
       error: null,
       filename: config.GIST_NAME || '',
     },
+    s3: {
+      triggered: false,
+      missingConfig: getMissingS3OutputConfig(config),
+      result: null,
+      error: null,
+      bucket: config.S3_BUCKET || '',
+      key: config.S3_KEY || '',
+    },
   };
+}
 
-  if (outputs.dns.missingConfig.length === 0) {
-    console.log('☁️ Cloudflare DNS: 已触发');
-    outputs.dns.triggered = true;
-    try {
-      const currentRecords = await fetchDns(config, deps.cfApiRequest || cfApiRequest);
-      outputs.dns.result = await applyDns({
-        currentRecords,
-        finalHealthyIps,
-        zoneId: config.CF_ZONE_ID,
-        domain: config.CF_DOMAIN,
-        apiRequest: deps.cfApiRequest || cfApiRequest,
-      });
-    } catch (error) {
-      outputs.dns.error = error.message;
-      console.error(`❌ DNS 同步失败: ${error.message}`);
-    }
+async function runOutputAdapter({ missingConfig, execute, extras = {} }) {
+  if (missingConfig.length > 0) {
+    return {
+      triggered: false,
+      missingConfig,
+      result: null,
+      error: null,
+      ...extras,
+    };
   }
 
-  if (outputs.gist.missingConfig.length === 0) {
-    console.log('📝 Gist: 已触发');
-    outputs.gist.triggered = true;
-    try {
-      outputs.gist.result = await syncGist(config, finalHealthyIps, deps.gistDeps || {});
-    } catch (error) {
-      outputs.gist.error = error.message;
-      console.error(`❌ Gist 同步失败: ${error.message}`);
+  try {
+    const result = await execute();
+    return {
+      triggered: true,
+      missingConfig: [],
+      result,
+      error: null,
+      ...extras,
+    };
+  } catch (error) {
+    return {
+      triggered: true,
+      missingConfig: [],
+      result: null,
+      error: error.message,
+      ...extras,
+    };
+  }
+}
+
+async function syncOutputs(config, finalHealthyIps, deps = {}) {
+  const fetchDns = deps.fetchCurrentDnsRecords || fetchCurrentDnsRecords;
+  const applyDns = deps.applyDnsChanges || applyDnsChanges;
+  const syncGist = deps.syncGistIpList || syncGistIpList;
+  const syncS3 = deps.syncS3IpList || syncS3IpList;
+  const outputs = buildOutputStates(config);
+  const adapters = [
+    {
+      name: 'dns',
+      missingConfig: outputs.dns.missingConfig,
+      execute: async () => {
+        const currentRecords = await fetchDns(config, deps.cfApiRequest || cfApiRequest);
+        return applyDns({
+          currentRecords,
+          finalHealthyIps,
+          zoneId: config.CF_ZONE_ID,
+          domain: config.CF_DOMAIN,
+          apiRequest: deps.cfApiRequest || cfApiRequest,
+        });
+      },
+    },
+    {
+      name: 'gist',
+      missingConfig: outputs.gist.missingConfig,
+      extras: { filename: outputs.gist.filename },
+      execute: async () => syncGist(config, finalHealthyIps, deps.gistDeps || {}),
+    },
+    {
+      name: 's3',
+      missingConfig: outputs.s3.missingConfig,
+      extras: { bucket: outputs.s3.bucket, key: outputs.s3.key },
+      execute: async () => syncS3(config, finalHealthyIps, deps.s3Deps || {}),
+    },
+  ];
+
+  const settled = await Promise.allSettled(
+    adapters.map(async (adapter) => ({
+      name: adapter.name,
+      output: await runOutputAdapter(adapter),
+    })),
+  );
+
+  for (const item of settled) {
+    if (item.status === 'fulfilled') {
+      outputs[item.value.name] = item.value.output;
+      continue;
     }
+
+    throw item.reason;
   }
 
-  const dnsSummary = formatDnsOutputSummary(outputs.dns);
-  if (dnsSummary) console.log(dnsSummary);
+  const summaries = [
+    formatDnsOutputSummary(outputs.dns),
+    formatGistOutputSummary(outputs.gist),
+    formatS3OutputSummary(outputs.s3),
+  ];
 
-  const gistSummary = formatGistOutputSummary(outputs.gist);
-  if (gistSummary) console.log(gistSummary);
+  for (const summary of summaries) {
+    if (summary) console.log(summary);
+  }
 
-  if (!outputs.dns.triggered && !outputs.gist.triggered) {
+  if (!outputs.dns.triggered && !outputs.gist.triggered && !outputs.s3.triggered) {
     console.log('ℹ️ 未配置任何输出目标，仅输出最终 IP 结果。');
   }
 
@@ -794,21 +1016,7 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
       poolIps,
       selection,
       finalHealthyIps,
-      outputs: {
-        dns: {
-          triggered: false,
-          missingConfig: getMissingCloudflareOutputConfig(config),
-          result: null,
-          error: null,
-        },
-        gist: {
-          triggered: false,
-          missingConfig: getMissingGistOutputConfig(config),
-          result: null,
-          error: null,
-          filename: config.GIST_NAME || '',
-        },
-      },
+      outputs: buildOutputStates(config),
     };
   }
 
@@ -832,20 +1040,24 @@ async function main() {
 
 module.exports = {
   applyDnsChanges,
+  buildS3PutObjectRequest,
   fetchCurrentDnsRecords,
   formatDnsOutputSummary,
   formatGistIpContent,
   formatGistOutputSummary,
   formatInputSourceSummary,
   formatLatencySelectionSummary,
+  formatS3OutputSummary,
   formatSelectionOutput,
   formatSpeedSelectionSummary,
   getMissingCloudflareOutputConfig,
   getMissingGistOutputConfig,
+  getMissingS3OutputConfig,
   getSpeedModeCandidateCount,
   getSpeedModeDurationSeconds,
   hasCloudflareOutput,
   hasGistOutput,
+  hasS3Output,
   loadRuntimeConfig,
   normalizeIpUpdateMode,
   parseBooleanEnv,
@@ -856,6 +1068,7 @@ module.exports = {
   selectIpsBySpeed,
   syncGistIpList,
   syncOutputs,
+  syncS3IpList,
   writeGistIdStateFile,
 };
 
