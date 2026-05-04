@@ -8,6 +8,18 @@ const { spawn, exec } = require('child_process');
 const https = require('https');
 const http = require('http');
 
+const {
+  resolveDataDir,
+  loadEnvFromConfigTxtIfNeeded,
+  parseConfigShToEnv,
+  loadEnvFromQingLongConfigIfNeeded,
+  findBinaryRecursive,
+  findFileUpwards,
+  sendNotification,
+  cidrToIps,
+  expandCidrs,
+} = require('./util_shared');
+
 // ================================
 // 本地目录约定
 // ================================
@@ -15,107 +27,11 @@ const http = require('http');
 const CONFIG_TXT_PATH = path.join(__dirname, 'config.txt');
 const DATA_DIR = resolveDataDir();
 
-function resolveDataDir() {
-  const envDir = process.env.LOCAL_DATA_DIR;
-  const resolved = envDir
-    ? path.isAbsolute(envDir) ? envDir : path.resolve(__dirname, envDir)
-    : path.join(__dirname, 'data');
-  try { fs.mkdirSync(resolved, { recursive: true }); } catch (e) { }
-  return resolved;
-}
-
 const OUTPUT_SPEED_FILE = path.join(DATA_DIR, 'cfst_speed_results.txt');
 const OUTPUT_IP_FILE = path.join(DATA_DIR, 'cfst_valid_ips.txt');
 const OUTPUT_PREFERRED_IP_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
 const TEMP_IP_FILE = path.join(DATA_DIR, 'cfst_ips.txt');
 const RESULT_CSV_FILE = path.join(DATA_DIR, 'result.csv');
-
-// ================================
-// 兼容从 config.txt 自动加载变量
-// ================================
-
-function loadEnvFromConfigTxtIfNeeded(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split(/\r?\n/);
-  for (const line of lines) {
-    let trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    if (trimmed.startsWith('export ')) trimmed = trimmed.slice('export '.length).trim();
-    const idx = trimmed.indexOf('=');
-    if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!process.env[key]) process.env[key] = value;
-  }
-}
-
-function parseConfigShToEnvIfNeeded(data) {
-  const lines = data.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('export ')) continue;
-
-    // export KEY="VALUE"
-    let m = trimmed.match(/^export\s+(\w+)="([^"]*)"$/);
-    if (m) {
-      const key = m[1];
-      const value = m[2];
-      if (!process.env[key]) process.env[key] = value;
-      continue;
-    }
-
-    // export KEY='VALUE'
-    m = trimmed.match(/^export\s+(\w+)='([^']*)'$/);
-    if (m) {
-      const key = m[1];
-      const value = m[2];
-      if (!process.env[key]) process.env[key] = value;
-      continue;
-    }
-
-    // export KEY=VALUE
-    m = trimmed.match(/^export\s+(\w+)=(.+)$/);
-    if (m) {
-      const key = m[1];
-      const rawValue = (m[2] || '').trim();
-      if (!process.env[key]) process.env[key] = rawValue;
-    }
-  }
-}
-
-function loadEnvFromQingLongConfigIfNeeded() {
-  const candidates = [
-    '/ql/data/config/config.json',
-    '/ql/config/config.json',
-    '/ql/data/config/config.sh'
-  ];
-  for (const fp of candidates) {
-    if (!fs.existsSync(fp)) continue;
-    try {
-      const raw = fs.readFileSync(fp, 'utf8');
-      if (fp.endsWith('.json')) {
-        const json = JSON.parse(raw);
-        if (json && typeof json === 'object') {
-          for (const [k, v] of Object.entries(json)) {
-            if (v === undefined || v === null) continue;
-            const str = String(v);
-            if (!process.env[k]) process.env[k] = str;
-          }
-        }
-      } else {
-        parseConfigShToEnvIfNeeded(raw);
-      }
-      console.log(`已加载青龙配置文件: ${fp}`);
-      return;
-    } catch (e) {
-      console.warn(`无法加载青龙配置 ${fp}: ${e.message}`);
-    }
-  }
-}
 
 // 优先：青龙环境变量(天然优先) > 青龙 config -> 再用本目录 config.txt 补齐默认值
 loadEnvFromQingLongConfigIfNeeded();
@@ -128,21 +44,6 @@ loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
 const cfstCandidates = os.platform() === 'win32' ? ['CloudflareST.exe', 'cfst.exe'] : ['CloudflareST', 'cfst'];
 let cfstExecutable = cfstCandidates[0];
 let CFST_PATH = path.join(__dirname, cfstExecutable);
-
-function findBinaryRecursive(dir, targetNames) {
-  const files = fs.readdirSync(dir);
-  for (const file of files) {
-    const fullPath = path.join(dir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      const found = findBinaryRecursive(fullPath, targetNames);
-      if (found) return found;
-    } else if (targetNames.includes(file)) {
-      return fullPath;
-    }
-  }
-  return null;
-}
 
 async function downloadCFST() {
   const platform = os.platform();
@@ -371,9 +272,9 @@ async function loadIpsFromUrl(urlString) {
     if (!urlString) return [];
     const sources = urlString.split(',').map(u => u.trim()).filter(Boolean);
     const allIps = new Set();
-    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g;
+    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?\b/g;
 
-    const parseIpsFromText = (text) => text.match(ipRegex) || [];
+    const parseIpsFromText = (text) => expandCidrs(text.match(ipRegex) || []);
 
     for (const source of sources) {
       try {
@@ -450,36 +351,6 @@ async function saveResults(finalResults, preferredIpCount) {
   console.log(`- ${OUTPUT_SPEED_FILE}`);
   console.log(`- ${OUTPUT_IP_FILE}`);
   console.log(`- ${OUTPUT_PREFERRED_IP_FILE}`);
-}
-
-function findFileUpwards(filename, startDir) {
-  let currentDir = startDir || __dirname;
-  const root = path.parse(currentDir).root;
-  while (currentDir !== root) {
-    const fp = path.join(currentDir, filename);
-    if (fs.existsSync(fp)) return fp;
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-  return null;
-}
-
-async function sendNotification(title, content) {
-  console.log(`\n准备发送通知 [${title}]...`);
-  try {
-    const sendNotifyPath = findFileUpwards('sendNotify.js');
-    if (sendNotifyPath) {
-      const notify = require(sendNotifyPath);
-      if (notify && typeof notify.sendNotify === 'function') {
-        await notify.sendNotify(title, content);
-        console.log('Node.js sendNotify.js 方式通知发送完毕。');
-        return;
-      }
-    }
-  } catch (e) {
-    console.warn(`通知模块调用失败: ${e.message}`);
-  }
 }
 
 // ================================

@@ -18,107 +18,27 @@ const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
 
+const {
+  resolveDataDir,
+  loadEnvFromConfigTxtIfNeeded,
+  parseConfigShToEnv,
+  loadEnvFromQingLongConfigIfNeeded,
+  findBinaryRecursive,
+  findFileUpwards,
+  sendNotification,
+  cidrToIps,
+  expandCidrs,
+} = require('./util_shared');
+
 // ================================
 // 兼容青龙/本地配置自动加载变量
 // ================================
 
 const CONFIG_TXT_PATH = path.join(__dirname, 'config.txt');
 
-function loadEnvFromConfigTxtIfNeeded(filePath) {
-  if (!fs.existsSync(filePath)) return;
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split(/\r?\n/);
-  for (const line of lines) {
-    let trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-    if (trimmed.startsWith('export ')) trimmed = trimmed.slice('export '.length).trim();
-    const idx = trimmed.indexOf('=');
-    if (idx <= 0) continue;
-    const key = trimmed.slice(0, idx).trim();
-    let value = trimmed.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (!process.env[key]) process.env[key] = value;
-  }
-}
-
-function parseConfigShToEnv(data) {
-  const lines = data.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('export ')) continue;
-
-    // export KEY="VALUE"
-    let m = trimmed.match(/^export\s+(\w+)="([^"]*)"$/);
-    if (m) {
-      const key = m[1];
-      const value = m[2];
-      if (!process.env[key]) process.env[key] = value;
-      continue;
-    }
-
-    // export KEY='VALUE'
-    m = trimmed.match(/^export\s+(\w+)='([^']*)'$/);
-    if (m) {
-      const key = m[1];
-      const value = m[2];
-      if (!process.env[key]) process.env[key] = value;
-      continue;
-    }
-
-    // export KEY=VALUE
-    m = trimmed.match(/^export\s+(\w+)=(.+)$/);
-    if (m) {
-      const key = m[1];
-      const raw = (m[2] || '').trim();
-      if (!process.env[key]) process.env[key] = raw;
-    }
-  }
-}
-
-function loadEnvFromQingLongConfigIfNeeded() {
-  const candidates = [
-    '/ql/data/config/config.json',
-    '/ql/config/config.json',
-    '/ql/data/config/config.sh'
-  ];
-  for (const fp of candidates) {
-    if (!fs.existsSync(fp)) continue;
-    try {
-      const raw = fs.readFileSync(fp, 'utf8');
-      if (fp.endsWith('.json')) {
-        const json = JSON.parse(raw);
-        if (json && typeof json === 'object') {
-          for (const [k, v] of Object.entries(json)) {
-            if (v === undefined || v === null) continue;
-            const str = String(v);
-            if (!process.env[k]) process.env[k] = str;
-          }
-        }
-      } else {
-        parseConfigShToEnv(raw);
-      }
-      console.log(`已加载青龙配置文件: ${fp}`);
-      return;
-    } catch (e) {
-      console.warn(`无法加载青龙配置 ${fp}: ${e.message}`);
-    }
-  }
-}
-
 // 优先级：青龙环境变量(天然优先) > 青龙配置 -> 再用本目录 config.txt 补齐默认值
 loadEnvFromQingLongConfigIfNeeded();
 loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
-
-function resolveDataDir() {
-  const envDir = process.env.LOCAL_DATA_DIR;
-  const resolved = envDir
-    ? path.isAbsolute(envDir) ? envDir : path.resolve(__dirname, envDir)
-    : path.join(__dirname, 'data');
-  try { fs.mkdirSync(resolved, { recursive: true }); } catch (e) { }
-  return resolved;
-}
 
 const DATA_DIR = resolveDataDir();
 const DEFAULT_POOL_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
@@ -404,34 +324,6 @@ function loadRuntimeConfig() {
 
 const TEST_TIMEOUT = 2000;
 
-function findFileUpwards(filename, startDir) {
-  let currentDir = startDir || __dirname;
-  const root = path.parse(currentDir).root;
-  while (currentDir !== root) {
-    const filePath = path.join(currentDir, filename);
-    if (fs.existsSync(filePath)) return filePath;
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) break;
-    currentDir = parentDir;
-  }
-  return null;
-}
-
-async function sendNotification(title, content) {
-  console.log(`\n[通知] ${title}: ${content}`);
-  try {
-    const notifyPath = findFileUpwards('sendNotify.js');
-    if (notifyPath) {
-      const notify = require(notifyPath);
-      if (notify && typeof notify.sendNotify === 'function') {
-        await notify.sendNotify(title, content);
-      }
-    }
-  } catch (e) {
-    console.error(`[通知失败] ${e.message}`);
-  }
-}
-
 function fetchIpsFromUrl(url) {
   return new Promise((resolve) => {
     const client = url.startsWith('https') ? https : http;
@@ -444,8 +336,8 @@ function fetchIpsFromUrl(url) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
-        const ips = data.match(ipRegex) || [];
+        const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
+        const ips = expandCidrs(data.match(ipRegex) || []);
         console.log(`   ✅ 远程 URL: ${url} -> ${ips.length} 个 IP`);
         resolve(ips);
       });
@@ -460,8 +352,8 @@ function readIpsFromLocalFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return [];
     const data = fs.readFileSync(filePath, 'utf8');
-    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
-    const ips = data.match(ipRegex) || [];
+    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
+    const ips = expandCidrs(data.match(ipRegex) || []);
     console.log(`   ✅ 本地文件: ${filePath} -> ${ips.length} 个 IP`);
     return ips;
   } catch (e) {
@@ -506,6 +398,8 @@ async function parseIpPool(poolStr) {
     const ip = item.split(':')[0];
     if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
       directIps.push(ip);
+    } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(ip)) {
+      directIps.push(...cidrToIps(ip));
     } else {
       console.warn(`  ⚠️ 跳过无效条目: ${item}`);
     }
@@ -522,21 +416,6 @@ async function parseIpPool(poolStr) {
   const localIps = fileItems.flatMap(fp => readIpsFromLocalFile(fp));
 
   return Array.from(new Set([...directIps, ...remoteIps, ...localIps]));
-}
-
-function findBinaryRecursive(dir, targetNames) {
-  const files = fs.readdirSync(dir);
-  for (const file of files) {
-    const fullPath = path.join(dir, file);
-    const stat = fs.statSync(fullPath);
-    if (stat.isDirectory()) {
-      const found = findBinaryRecursive(fullPath, targetNames);
-      if (found) return found;
-    } else if (targetNames.includes(file)) {
-      return fullPath;
-    }
-  }
-  return '';
 }
 
 function findExistingCfstBinary(startDir = __dirname) {
