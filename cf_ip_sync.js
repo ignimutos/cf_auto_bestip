@@ -28,6 +28,7 @@ const {
   sendNotification,
   cidrToIps,
   expandCidrs,
+  spawnWithCleanOutput,
 } = require('./util_shared');
 
 // ================================
@@ -448,11 +449,8 @@ async function defaultRunCfst({ cfstBinaryPath, inputFilePath, resultCsvPath, co
     args.push('-url', config.CFST_SPEED_TEST_URL);
   }
 
-  await new Promise((resolve, reject) => {
-    const child = spawn(cfstBinaryPath, args, { stdio: 'inherit', cwd: path.dirname(resultCsvPath) });
-    child.on('close', (code) => code === 0 ? resolve() : reject(new Error(`CloudflareST exited with code ${code}`)));
-    child.on('error', reject);
-  });
+  const exitCode = await spawnWithCleanOutput(cfstBinaryPath, args, { cwd: path.dirname(resultCsvPath) });
+  if (exitCode !== 0) throw new Error(`CloudflareST exited with code ${exitCode}`);
 }
 
 function testIp(ip) {

@@ -18,6 +18,7 @@ const {
   sendNotification,
   cidrToIps,
   expandCidrs,
+  spawnWithCleanOutput,
 } = require('./util_shared');
 
 // ================================
@@ -424,15 +425,10 @@ async function main() {
   console.log(`\n============== 开始执行 CloudflareSpeedTest ==============`);
   console.log(`CMD: ${cfstExecutable} ${cfstArgs.join(' ')}\n`);
 
+  console.log('正在运行 CloudflareST，请稍候...');
   try {
-    await new Promise((resolve, reject) => {
-      const cfstProcess = spawn(CFST_PATH, cfstArgs, { stdio: 'inherit', cwd: DATA_DIR });
-      cfstProcess.on('close', (code) => {
-        console.log(`\nCloudflareST 执行完毕，退出码: ${code}`);
-        resolve();
-      });
-      cfstProcess.on('error', (err) => reject(err));
-    });
+    const exitCode = await spawnWithCleanOutput(CFST_PATH, cfstArgs, { cwd: DATA_DIR });
+    console.log(`\nCloudflareST 执行完毕，退出码: ${exitCode}`);
   } catch (err) {
     console.error(`执行 CloudflareST 时出错: ${err.message}`);
     await sendNotification('CFST 测速异常', `执行 CloudflareST 失败: ${err.message}`);

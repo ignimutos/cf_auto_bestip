@@ -201,16 +201,17 @@ function spawnWithCleanOutput(command, args, options = {}) {
     process.stdout.write(trimmed + '\n');
   };
 
-  child.stdout.on('data', (data) => {
+  const onData = (data) => {
     const text = data.toString();
     for (const ch of text) {
       if (ch === '\n') { emit(lineBuffer); lineBuffer = ''; }
       else if (ch === '\r') { lineBuffer = ''; }
       else { lineBuffer += ch; }
     }
-  });
+  };
 
-  child.stderr.pipe(process.stderr);
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
 
   return new Promise((resolve, reject) => {
     child.on('close', (code) => {
