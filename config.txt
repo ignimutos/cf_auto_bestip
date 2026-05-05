@@ -52,7 +52,7 @@ export LOCAL_DATA_DIR=./data
 # - 远程 URL：http(s)://...
 # - 本地文件路径：./data/cfst_select/preferred_ips.txt 或 /abs/path/xxx.txt
 # 若留空，脚本默认读取 ./data/cfst_select/preferred_ips.txt
-export CF_IP_POOL="./data/cfst_preferred_ips.txt,https://ipdb.api.030101.xyz/?type=bestcf,https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
+export CF_IP_POOL="./data/cfst_select/preferred_ips.txt,https://ipdb.api.030101.xyz/?type=bestcf,https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
 
 
 # Cloudflare API Token
