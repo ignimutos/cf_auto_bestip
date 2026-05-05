@@ -8,13 +8,13 @@
 ## ================================
 
 # 固定候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
-export IP_SOURCE_URL="./data/cfst_select/valid_ips.txt,https://api.uouin.com/cloudflare.html"
+export IP_SOURCE_URL="https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
 
 # 随机候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
-export IP_RANDOM_SOURCE_URL="https://zip.cm.edu.kg/all.txt,https://ip.164746.xyz"
+export IP_RANDOM_SOURCE_URL="https://www.cloudflare.com/ips-v4"
 
 # 随机采样数量（默认 300）
-export IP_RANDOM_SAMPLE_COUNT=300
+export IP_RANDOM_SAMPLE_COUNT=10000
 
 # 下载速度门槛（MB/s，默认 10）
 export DOWNLOAD_SPEED_THRESHOLD_MBPS=10
@@ -109,4 +109,3 @@ export S3_SECRET_ACCESS_KEY=
 
 # 是否允许明文 HTTP Endpoint（仅本地调试 MinIO 等场景才设为 true）
 export S3_ALLOW_HTTP=false
-
