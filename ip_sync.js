@@ -30,6 +30,8 @@ const {
   sendNotification,
   cidrToIps,
   expandCidrs,
+  extractValidIpv4Candidates,
+  normalizeIpv4Candidate,
   spawnWithCleanOutput,
 } = require("./utils/shared");
 
@@ -96,6 +98,26 @@ function parseBooleanEnv(rawValue) {
       .trim()
       .toLowerCase() === "true"
   );
+}
+
+function parseIntegerEnvValue(rawValue) {
+  if (typeof rawValue === "number" && Number.isInteger(rawValue)) {
+    return rawValue;
+  }
+
+  const value = String(rawValue ?? "").trim();
+  if (!/^-?\d+$/.test(value)) return null;
+  return Number.parseInt(value, 10);
+}
+
+function parsePositiveIntegerEnv(rawValue, defaultValue) {
+  const parsed = parseIntegerEnvValue(rawValue);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function parseNonNegativeIntegerEnv(rawValue, defaultValue) {
+  const parsed = parseIntegerEnvValue(rawValue);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultValue;
 }
 
 function getMissingCloudflareOutputConfig(config) {
@@ -362,9 +384,8 @@ function parseRuntimeConfig(env) {
     CF_ZONE_ID: env.CF_ZONE_ID,
     CF_DOMAIN: env.CF_DOMAIN,
     CF_IP_POOL: env.CF_IP_POOL || "",
-    MAX_IPS: parseInt(env.MAX_IPS, 10) || 2,
-    NOTIFY_THRESHOLD: parseInt(env.NOTIFY_THRESHOLD, 10) || 2,
-    POOL_SAMPLE_COUNT: parseInt(env.POOL_SAMPLE_COUNT, 10) || 0,
+    MAX_IPS: parsePositiveIntegerEnv(env.MAX_IPS, 2),
+    NOTIFY_THRESHOLD: parseNonNegativeIntegerEnv(env.NOTIFY_THRESHOLD, 2),
     IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
     GITHUB_TOKEN: env.GITHUB_TOKEN,
     GIST_NAME: (env.GIST_NAME || "").trim(),
@@ -376,12 +397,12 @@ function parseRuntimeConfig(env) {
     S3_ACCESS_KEY_ID: (env.S3_ACCESS_KEY_ID || "").trim(),
     S3_SECRET_ACCESS_KEY: (env.S3_SECRET_ACCESS_KEY || "").trim(),
     S3_ALLOW_HTTP: parseBooleanEnv(env.S3_ALLOW_HTTP),
-    CFST_LATENCY_THRESHOLD: parseInt(env.CFST_LATENCY_THRESHOLD, 10) || 500,
+    CFST_LATENCY_THRESHOLD: parsePositiveIntegerEnv(env.CFST_LATENCY_THRESHOLD, 500),
     DOWNLOAD_SPEED_THRESHOLD_MBPS:
       parseFloat(env.DOWNLOAD_SPEED_THRESHOLD_MBPS) || 10,
-    SPEED_TEST_DURATION_S: parseInt(env.SPEED_TEST_DURATION_S, 10) || 10,
-    CFST_TEST_COUNT: parseInt(env.CFST_TEST_COUNT, 10) || 30,
-    LATENCY_TEST_CONCURRENCY: parseInt(env.LATENCY_TEST_CONCURRENCY, 10) || 200,
+    SPEED_TEST_DURATION_S: parsePositiveIntegerEnv(env.SPEED_TEST_DURATION_S, 10),
+    CFST_TEST_COUNT: parsePositiveIntegerEnv(env.CFST_TEST_COUNT, 30),
+    LATENCY_TEST_CONCURRENCY: parsePositiveIntegerEnv(env.LATENCY_TEST_CONCURRENCY, 200),
     CFST_SPEED_TEST_URL: env.CFST_SPEED_TEST_URL || "",
   };
 }
@@ -391,6 +412,14 @@ function loadRuntimeConfig() {
 }
 
 const TEST_TIMEOUT = 2000;
+
+function parseIpsFromText(text) {
+  return expandCidrs(
+    extractValidIpv4Candidates(text).map((candidate) =>
+      candidate.includes(":") ? candidate.split(":")[0] : candidate,
+    ),
+  );
+}
 
 function fetchIpsFromUrl(url) {
   return new Promise((resolve) => {
@@ -405,8 +434,7 @@ function fetchIpsFromUrl(url) {
         let data = "";
         res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {
-          const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
-          const ips = expandCidrs(data.match(ipRegex) || []);
+          const ips = parseIpsFromText(data);
           console.log(`   ✅ 远程 URL: ${url} -> ${ips.length} 个 IP`);
           resolve(ips);
         });
@@ -422,8 +450,7 @@ function readIpsFromLocalFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return [];
     const data = fs.readFileSync(filePath, "utf8");
-    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?\b/g;
-    const ips = expandCidrs(data.match(ipRegex) || []);
+    const ips = parseIpsFromText(data);
     console.log(`   ✅ 本地文件: ${filePath} -> ${ips.length} 个 IP`);
     return ips;
   } catch (e) {
@@ -474,11 +501,13 @@ async function parseIpPool(poolStr) {
       continue;
     }
 
-    const ip = item.split(":")[0];
-    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-      directIps.push(ip);
-    } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(ip)) {
-      directIps.push(...cidrToIps(ip));
+    const normalizedItem = normalizeIpv4Candidate(item);
+    if (normalizedItem) {
+      if (normalizedItem.includes("/")) {
+        directIps.push(...cidrToIps(normalizedItem));
+      } else {
+        directIps.push(normalizedItem.includes(":") ? normalizedItem.split(":")[0] : normalizedItem);
+      }
     } else {
       console.warn(`  ⚠️ 跳过无效条目: ${item}`);
     }
@@ -750,10 +779,37 @@ function buildLatencySelection(results, maxIps) {
   };
 }
 
+async function mapWithConcurrencyLimit(items, concurrency, iteratee) {
+  if (items.length === 0) return [];
+
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  async function worker() {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await iteratee(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 async function selectIpsByLatency(poolIps, config, deps = {}) {
   const probe = deps.testIp || testIp;
-  const results =
-    poolIps.length > 0 ? await Promise.all(poolIps.map((ip) => probe(ip))) : [];
+  const probeConcurrency =
+    Number.isInteger(config.LATENCY_TEST_CONCURRENCY) &&
+    config.LATENCY_TEST_CONCURRENCY > 0
+      ? config.LATENCY_TEST_CONCURRENCY
+      : 200;
+  const results = await mapWithConcurrencyLimit(
+    poolIps,
+    probeConcurrency,
+    (ip) => probe(ip),
+  );
 
   return buildLatencySelection(results, config.MAX_IPS);
 }
@@ -779,8 +835,16 @@ function getSpeedModeCandidateCount(maxIps) {
 
 async function selectIpsBySpeed(poolIps, config, deps = {}) {
   const probe = deps.testIp || testIp;
-  const probeResults =
-    poolIps.length > 0 ? await Promise.all(poolIps.map((ip) => probe(ip))) : [];
+  const probeConcurrency =
+    Number.isInteger(config.LATENCY_TEST_CONCURRENCY) &&
+    config.LATENCY_TEST_CONCURRENCY > 0
+      ? config.LATENCY_TEST_CONCURRENCY
+      : 200;
+  const probeResults = await mapWithConcurrencyLimit(
+    poolIps,
+    probeConcurrency,
+    (ip) => probe(ip),
+  );
   const candidates = sortHealthyEntries(probeResults)
     .slice(0, getSpeedModeCandidateCount(config.MAX_IPS))
     .map((result) => result.ip);

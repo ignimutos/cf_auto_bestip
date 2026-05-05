@@ -173,6 +173,33 @@ function expandCidrs(ipList) {
   return ipList.flatMap(ip => cidrToIps(ip));
 }
 
+function isValidIpv4(ip) {
+  const parts = String(ip).split('.');
+  return parts.length === 4 && parts.every(part => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
+}
+
+function normalizeIpv4Candidate(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}\/\d{1,2}$/.test(value)) {
+    const [ip, mask] = value.split('/');
+    return isValidIpv4(ip) && Number(mask) >= 0 && Number(mask) <= 32 ? value : '';
+  }
+
+  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(value)) {
+    const [ip] = value.split(':');
+    return isValidIpv4(ip) ? value : '';
+  }
+
+  return isValidIpv4(value) ? value : '';
+}
+
+function extractValidIpv4Candidates(text) {
+  const matches = String(text || '').match(/\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?\b/g) || [];
+  return matches.map(candidate => normalizeIpv4Candidate(candidate)).filter(Boolean);
+}
+
 // --- cfst output cleaning (QingLong compatibility) ---
 
 /**
@@ -234,5 +261,8 @@ module.exports = {
   sendNotification,
   cidrToIps,
   expandCidrs,
+  extractValidIpv4Candidates,
+  isValidIpv4,
+  normalizeIpv4Candidate,
   spawnWithCleanOutput,
 };

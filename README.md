@@ -24,7 +24,7 @@
 主要职责：
 
 - 📥 自动下载并解压 `CloudflareSpeedTest` 二进制（跨平台识别：Linux / macOS / Windows）
-- 🗂️ 读取配置（环境变量、`config.txt`、青龙配置）
+- 🗂️ 读取配置（环境变量、本地 `config.txt`、青龙配置）
 - 🌐 从 `IP_SOURCE_URL` / `IP_RANDOM_SOURCE_URL` 获取候选 IP
 - 🎲 可对采样池随机抽样，降低测试成本
 - ⚙️ 调用 CloudflareSpeedTest 执行延迟 + 下载速度测试
@@ -73,7 +73,7 @@
 项目支持以下配置来源（按脚本逻辑合并）：
 
 - 环境变量（推荐）
-- 同目录 `config.txt`
+- 同目录 `config.txt`（建议由 `config.example.txt` 复制得到，仅本地使用）
 - 青龙配置（`config.json` / `config.sh`）
 
 ### `cfst_select.js` 常用变量
@@ -96,7 +96,6 @@
 - `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
 - `MAX_IPS`：最终产出的 IP 数量（代码默认 2；你也可以在 `config.txt` 里按需改大）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
-- `POOL_SAMPLE_COUNT`：保留兼容，但当前模式下不生效
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_DOMAIN`：可选；三者都存在时才同步 DNS
 - `GITHUB_TOKEN` / `GIST_NAME`：可选；两者都存在时才同步 Gist
@@ -107,7 +106,7 @@
 - `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式第二阶段复用的下载速度阈值（默认 10）
 - `SPEED_TEST_DURATION_S`：`speed` 模式基础测速时长（默认 10）；实际传给 CloudflareST 时会取 `max(3, floor(该值/2))`
 - `CFST_TEST_COUNT`：兼容保留；`speed` 模式实际只会把探活成功后按延迟排序的前 `MAX_IPS * 3` 个候选交给 CloudflareST
-- `LATENCY_TEST_CONCURRENCY`：`speed` 模式第二阶段复用的并发数（默认 200）
+- `LATENCY_TEST_CONCURRENCY`：轻量探活与 CloudflareST 并发数；会影响 `cfst_select.js` 主测速和 `ip_sync.js` 的探活/`speed` 二阶段测速；未配置或非法时默认 `200`
 - `CFST_SPEED_TEST_URL`：`speed` 模式第二阶段复用的 CloudflareST 自定义测速地址（可选）
 
 ---
@@ -123,9 +122,17 @@
 - `curl`、`tar`（macOS/Linux 通常自带）
 - Windows 建议准备 unzip 能力（或使用已解压好的 CloudflareST）
 
-### 2. 准备配置（示例）
+### 2. 准备配置（本地）
 
-在项目根目录创建 `config.txt`：
+先在项目根目录复制模板：
+
+```bash
+cp config.example.txt config.txt
+```
+
+`config.txt` 仅本地使用，已被 `.gitignore` 忽略；请勿提交，尤其不要提交任何密钥。
+
+然后按需编辑 `config.txt`，例如：
 
 ```bash
 IP_SOURCE_URL=https://example.com/cf_ips.txt
@@ -182,15 +189,15 @@ node ip_sync.js
 你可以直接在青龙容器内执行（成功率最高）：
 
 ```bash
-ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "README|LICENSE" "config" "" "js|txt"
+ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "README|LICENSE" "" "" "js|txt"
 ```
 
 参数含义（不同青龙版本参数个数可能不同；下面以此命令为准）：
 
 - 仓库：`https://github.com/lee1080/cf_auto_bestip.git`
-- 白名单：`cfst_test|cf_ip_sync`（只拉这两个脚本）
+- 白名单：`cfst_select|ip_sync`（只拉这两个脚本）
 - 黑名单：`README|LICENSE`（不拉文档/协议文件）
-- 排除关键字：`config`（避免把 `config` 相关文件当脚本拉取；按你面板规则）
+- 排除关键字：留空（这样 `config.example.txt` 也会被拉取，便于复制成本地 `config.txt`）
 - 分支/其他参数：留空（`""`）
 - 文件后缀：`js|txt`（允许拉取 `.js` 和 `.txt`）
 
@@ -199,13 +206,13 @@ ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "REA
 如果你的青龙版本支持「创建订阅 -> 名称」自动解析，可尝试：
 
 ```text
-cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip_sync#README|LICENSE#config##js|txt
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip_sync#README|LICENSE###js|txt
 ```
 
 说明（名称粘贴模式字段顺序）：
 
 - 名称#链接#分支#白名单#黑名单#（其余参数…）
-- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_test|cf_ip_sync`，黑名单 `README|LICENSE`，后缀 `js|txt`
+- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_select|ip_sync`，黑名单 `README|LICENSE`，排除关键字留空，后缀 `js|txt`
 
 若该模式仍不生效，请优先使用上面的 `ql repo` 命令方式。✅
 
@@ -231,7 +238,7 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip
 - 若需要 DNS 输出：`CF_API_TOKEN`、`CF_ZONE_ID`、`CF_DOMAIN`
 - 若需要 Gist 输出：`GITHUB_TOKEN`、`GIST_NAME`
 
-如果你直接在仓库内维护 `config.txt`（且已脱敏），脚本也会自动读取。✅
+如需使用文件配置，请在本地复制 `config.example.txt` 为 `config.txt`；`config.txt` 不应提交。✅
 
 ### 5. 运行顺序建议
 
@@ -268,7 +275,7 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip
 
 - ❗不要把真实 `CF_API_TOKEN` 提交到 GitHub
 - ✅ 建议提交 `config.example.txt`，把敏感值替换为占位符
-- ✅ 建议使用 `.gitignore` 忽略 `data/` 等运行产物（`config.txt` 可按需提交）
+- ✅ 建议使用 `.gitignore` 忽略 `data/` 等运行产物，`config.txt` 仅本地使用且不应提交
 
 ---
 

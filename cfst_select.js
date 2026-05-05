@@ -18,6 +18,7 @@ const {
   sendNotification,
   cidrToIps,
   expandCidrs,
+  extractValidIpv4Candidates,
   spawnWithCleanOutput,
 } = require('./utils/shared');
 
@@ -61,6 +62,31 @@ const cfstCandidates = os.platform() === 'win32' ? ['CloudflareST.exe', 'cfst.ex
 let cfstExecutable = cfstCandidates[0];
 let CFST_PATH = path.join(__dirname, cfstExecutable);
 
+function getReleaseAssetPrefix(platform, arch) {
+  if (platform === 'linux') {
+    return `cfst_linux_${arch === 'arm64' ? 'arm64' : arch === 'arm' ? 'arm' : 'amd64'}`;
+  }
+  if (platform === 'darwin') {
+    return `cfst_darwin_${arch === 'arm64' ? 'arm64' : 'amd64'}`;
+  }
+  if (platform === 'win32') {
+    return `cfst_windows_${arch === 'arm64' ? 'arm64' : arch === 'ia32' ? '386' : 'amd64'}`;
+  }
+  throw new Error(`不支持的操作系统: ${platform}`);
+}
+
+function normalizeLatencyTestConcurrency(rawValue) {
+  if (typeof rawValue === 'number' && Number.isInteger(rawValue)) {
+    return rawValue > 0 ? rawValue : 200;
+  }
+
+  const value = String(rawValue ?? '').trim();
+  if (!/^-?\d+$/.test(value)) return 200;
+
+  const parsed = Number.parseInt(value, 10);
+  return parsed > 0 ? parsed : 200;
+}
+
 async function downloadCFST() {
   const platform = os.platform();
   const arch = os.arch();
@@ -93,20 +119,7 @@ async function downloadCFST() {
     return { name: matched.name, url: matched.browser_download_url };
   }
 
-  let assetPrefix = '';
-  if (platform === 'linux') {
-    const archStr = arch === 'arm64' ? 'arm64' : (arch === 'arm' ? 'arm' : 'amd64');
-    assetPrefix = `cfst_linux_${archStr}`;
-  } else if (platform === 'darwin') {
-    const archStr = arch === 'arm64' ? 'arm64' : 'amd64';
-    assetPrefix = `cfst_darwin_${archStr}`;
-  } else if (platform === 'win32') {
-    const archStr = arch === 'arm64' ? 'arm64' : (arch === 'x32' ? '386' : 'amd64');
-    assetPrefix = `cfst_windows_${archStr}`;
-  } else {
-    throw new Error(`不支持的操作系统: ${platform}`);
-  }
-
+  const assetPrefix = getReleaseAssetPrefix(platform, arch);
   const latest = await fetchLatestReleaseAssetUrl(assetPrefix);
   fileName = latest.name;
   isZip = fileName.endsWith('.zip');
@@ -288,9 +301,10 @@ async function loadIpsFromUrl(urlString) {
     if (!urlString) return [];
     const sources = urlString.split(',').map(u => u.trim()).filter(Boolean);
     const allIps = new Set();
-    const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}(?:\/\d{1,2})?(?::\d+)?\b/g;
 
-    const parseIpsFromText = (text) => expandCidrs(text.match(ipRegex) || []);
+    const parseIpsFromText = (text) => expandCidrs(
+      extractValidIpv4Candidates(text).map(candidate => candidate.includes(':') ? candidate.split(':')[0] : candidate)
+    );
 
     for (const source of sources) {
       try {
@@ -434,8 +448,7 @@ async function main() {
   ];
 
   if (config.cfst_speed_test_url) cfstArgs.push('-url', config.cfst_speed_test_url);
-  if (config.latency_test_concurrency && config.latency_test_concurrency > 12) cfstArgs.push('-n', config.latency_test_concurrency);
-  else cfstArgs.push('-n', 200);
+  cfstArgs.push('-n', normalizeLatencyTestConcurrency(config.latency_test_concurrency));
 
   console.log(`\n============== 开始执行 CloudflareSpeedTest ==============`);
   console.log(`CMD: ${cfstExecutable} ${cfstArgs.join(' ')}\n`);
@@ -482,9 +495,11 @@ async function main() {
 }
 
 module.exports = {
+  getReleaseAssetPrefix,
   getSelectDataPaths,
   loadConfig,
   main,
+  normalizeLatencyTestConcurrency,
   parseCsvResults,
   saveResults,
 };
