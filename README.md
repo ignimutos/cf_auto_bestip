@@ -202,16 +202,16 @@ node ip_sync.js
 你可以直接在青龙容器内执行（成功率最高）：
 
 ```bash
-ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "README|LICENSE" "" "" "js|txt"
+ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "README|LICENSE" "utils" "" "js|txt"
 ```
 
 参数含义（不同青龙版本参数个数可能不同；下面以此命令为准）：
 
 - 仓库：`https://github.com/lee1080/cf_auto_bestip.git`
-- 白名单：`cfst_select|ip_sync`（只拉这两个脚本）
+- 白名单：`cfst_select|ip_sync`（只拉两个入口脚本，避免 `utils/shared.js` 出现在任务列表里）
 - 黑名单：`README|LICENSE`（不拉文档/协议文件）
-- 排除关键字：留空（这样 `config.example.txt` 也会被拉取，便于复制成本地 `config.txt`）
-- 分支/其他参数：留空（`""`）
+- 依赖文件：`utils`（把 `utils/shared.js` 作为依赖拷贝到仓库目录）
+- 分支：留空（默认分支）
 - 文件后缀：`js|txt`（允许拉取 `.js` 和 `.txt`）
 
 ### 1.2 名称粘贴模式（部分版本支持）
@@ -219,13 +219,14 @@ ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "REA
 如果你的青龙版本支持「创建订阅 -> 名称」自动解析，可尝试：
 
 ```text
-cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip_sync#README|LICENSE###js|txt
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip_sync#README|LICENSE#utils##js|txt
 ```
 
 说明（名称粘贴模式字段顺序）：
 
 - 名称#链接#分支#白名单#黑名单#（其余参数…）
-- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_select|ip_sync`，黑名单 `README|LICENSE`，排除关键字留空，后缀 `js|txt`
+- 本示例与上面的 `ql repo` 命令保持一致：白名单 `cfst_select|ip_sync`，黑名单 `README|LICENSE`，依赖文件 `utils`，后缀 `js|txt`
+- 这样入口脚本仍然只有 `cfst_select.js` 和 `ip_sync.js`，而 `utils/shared.js` 会作为依赖文件同步，不会单独出现在任务列表中。
 
 若该模式仍不生效，请优先使用上面的 `ql repo` 命令方式。✅
 
