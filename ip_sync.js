@@ -39,6 +39,7 @@ function getSyncDataPaths(dataRootDir = resolveDataDir()) {
     dataRootDir,
     dataDir,
     defaultPoolFile: path.join(dataRootDir, "cfst_select", "preferred_ips.txt"),
+    preferredOutputFile: path.join(dataDir, "preferred_ips.txt"),
     gistIdStateFile: path.join(dataDir, "gist_id.txt"),
     inputFilePath: path.join(dataDir, "ips.txt"),
     resultCsvPath: path.join(dataDir, "result.csv"),
@@ -48,6 +49,20 @@ function getSyncDataPaths(dataRootDir = resolveDataDir()) {
 function ensureDataDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
   return dirPath;
+}
+
+function ensurePreferredOutputFile(filePath = PREFERRED_OUTPUT_FILE) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, "", "utf8");
+  }
+  return filePath;
+}
+
+function writePreferredOutputFile(ips, filePath = PREFERRED_OUTPUT_FILE) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${ips.join("\n")}\n`, "utf8");
+  return filePath;
 }
 
 // ================================
@@ -63,6 +78,7 @@ loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
 const SYNC_DATA_PATHS = getSyncDataPaths();
 const DATA_DIR = ensureDataDir(SYNC_DATA_PATHS.dataDir);
 const DEFAULT_POOL_FILE = SYNC_DATA_PATHS.defaultPoolFile;
+const PREFERRED_OUTPUT_FILE = SYNC_DATA_PATHS.preferredOutputFile;
 const GIST_ID_STATE_FILE = SYNC_DATA_PATHS.gistIdStateFile;
 const CFST_CANDIDATES =
   os.platform() === "win32"
@@ -1015,6 +1031,9 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   const pickBySpeed = deps.selectIpsBySpeed || selectIpsBySpeed;
   const notify = deps.sendNotification || sendNotification;
   const writeOutputs = deps.syncOutputs || syncOutputs;
+  const syncDataPaths = deps.syncDataPaths || SYNC_DATA_PATHS;
+
+  ensurePreferredOutputFile(syncDataPaths.preferredOutputFile);
 
   const poolIps = await loadPool(config.CF_IP_POOL);
   if (poolIps.length === 0) {
@@ -1047,6 +1066,7 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
     );
   }
 
+  writePreferredOutputFile(finalHealthyIps, syncDataPaths.preferredOutputFile);
   const outputs = await writeOutputs(config, finalHealthyIps, deps);
   return { poolIps, selection, finalHealthyIps, outputs };
 }

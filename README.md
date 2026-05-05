@@ -255,9 +255,12 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip
 
 ### `data/ip_sync/`
 
+- `preferred_ips.txt` - `ip_sync.js` 最终选出的本地结果文件
 - `ips.txt` - `speed` 模式二阶段测速输入 IP 临时文件
 - `result.csv` - `speed` 模式二阶段 CloudflareST 原始结果
 - `gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
+
+其中：`data/cfst_select/preferred_ips.txt` 是上游优选池，`data/ip_sync/preferred_ips.txt` 是下游最终结果；若本次没有可用 IP，`ip_sync.js` 会保留该文件原有内容，首次运行且无结果时则创建空文件。
 
 ---
 
