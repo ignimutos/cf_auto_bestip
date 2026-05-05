@@ -81,12 +81,13 @@
 - `IP_SOURCE_URL`：固定候选 IP 来源（URL/文件/单个 IP，支持逗号分隔）
 - `IP_RANDOM_SOURCE_URL`：随机候选池来源
 - `IP_RANDOM_SAMPLE_COUNT`：随机采样数量（默认 300）
-- `CFST_LATENCY_THRESHOLD`：延迟阈值 ms（默认 500）
-- `DOWNLOAD_SPEED_THRESHOLD_MBPS`：下载速度阈值（默认 10）
-- `SPEED_TEST_DURATION_S`：测速时长秒（默认 10）
-- `CFST_TEST_COUNT`：参与下载测速的候选数量（默认 30）
+- `CFST_SELECT_LATENCY_THRESHOLD`：延迟阈值 ms（默认 500）
+- `CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS`：下载速度阈值（默认 10）
+- `CFST_SELECT_SPEED_TEST_DURATION_S`：测速时长秒（默认 10）
+- `CFST_SELECT_TEST_COUNT`：参与下载测速的候选数量（默认 30）
+- `CFST_SELECT_LATENCY_TEST_CONCURRENCY`：CloudflareST 并发数（默认 200）
 - `PREFERRED_IP_COUNT`：最终优选保存数量（默认 10）
-- `CFST_SPEED_TEST_URL`：CloudflareST 自定义测速地址（可选）
+- `CFST_SELECT_SPEED_TEST_URL`：CloudflareST 自定义测速地址（可选）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `github_proxy`：下载 CloudflareST 的代理前缀（可选）
 
@@ -102,12 +103,13 @@
 - `GIST_SECRET`：是否创建 secret gist（可选；仅 `true` 视为 secret，其它值都按 public 处理）
 - `S3_ENDPOINT` / `S3_REGION` / `S3_BUCKET` / `S3_KEY` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`：可选；六者都存在时才同步 S3/R2
 - `S3_ALLOW_HTTP`：可选；默认 `false`，仅本地调试 MinIO 等明文 HTTP 场景才设为 `true`
-- `CFST_LATENCY_THRESHOLD`：`speed` 模式第二阶段复用的 CloudflareST 延迟阈值（默认 500）
-- `DOWNLOAD_SPEED_THRESHOLD_MBPS`：`speed` 模式第二阶段复用的下载速度阈值（默认 10）
-- `SPEED_TEST_DURATION_S`：`speed` 模式基础测速时长（默认 10）；实际传给 CloudflareST 时会取 `max(3, floor(该值/2))`
-- `CFST_TEST_COUNT`：兼容保留；`speed` 模式实际只会把探活成功后按延迟排序的前 `MAX_IPS * 3` 个候选交给 CloudflareST
-- `LATENCY_TEST_CONCURRENCY`：轻量探活与 CloudflareST 并发数；会影响 `cfst_select.js` 主测速和 `ip_sync.js` 的探活/`speed` 二阶段测速；未配置或非法时默认 `200`
-- `CFST_SPEED_TEST_URL`：`speed` 模式第二阶段复用的 CloudflareST 自定义测速地址（可选）
+- `IP_SYNC_LATENCY_THRESHOLD`：优先使用；未设置时回退到 `CFST_SELECT_LATENCY_THRESHOLD`
+- `IP_SYNC_TEST_COUNT`：优先使用；未设置时回退到 `CFST_SELECT_TEST_COUNT`
+- `IP_SYNC_LATENCY_TEST_CONCURRENCY`：优先使用；未设置时回退到 `CFST_SELECT_LATENCY_TEST_CONCURRENCY`
+- `IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS`：优先使用；未设置时回退到 `CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS`
+- `IP_SYNC_SPEED_TEST_URL`：优先使用；未设置时回退到 `CFST_SELECT_SPEED_TEST_URL`
+- `IP_SYNC_SPEED_TEST_DURATION_S`：若设置则直接传给 CloudflareST；未设置时才基于 `CFST_SELECT_SPEED_TEST_DURATION_S` 计算 `max(3, floor(x/2))`
+- `IP_SYNC_SPEED_CANDIDATE_COUNT`：若设置则直接作为 `speed` 模式二阶段候选数量；未设置时才按 `MAX_IPS * 3` 计算
 
 ---
 
@@ -136,9 +138,20 @@ cp config.example.txt config.txt
 
 ```bash
 IP_SOURCE_URL=https://example.com/cf_ips.txt
-CFST_LATENCY_THRESHOLD=500
-DOWNLOAD_SPEED_THRESHOLD_MBPS=10
+CFST_SELECT_LATENCY_THRESHOLD=500
+CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS=10
+CFST_SELECT_SPEED_TEST_DURATION_S=10
+CFST_SELECT_TEST_COUNT=30
+CFST_SELECT_LATENCY_TEST_CONCURRENCY=200
 PREFERRED_IP_COUNT=10
+
+IP_SYNC_LATENCY_THRESHOLD=
+IP_SYNC_TEST_COUNT=
+IP_SYNC_LATENCY_TEST_CONCURRENCY=
+IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS=
+IP_SYNC_SPEED_TEST_DURATION_S=
+IP_SYNC_SPEED_TEST_URL=
+IP_SYNC_SPEED_CANDIDATE_COUNT=
 
 CF_API_TOKEN=your_token
 CF_ZONE_ID=your_zone_id

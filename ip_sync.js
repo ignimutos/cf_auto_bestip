@@ -120,6 +120,49 @@ function parseNonNegativeIntegerEnv(rawValue, defaultValue) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultValue;
 }
 
+function parseOptionalPositiveIntegerEnv(rawValue) {
+  const parsed = parseIntegerEnvValue(rawValue);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseOptionalPositiveFloatEnv(rawValue) {
+  const value = String(rawValue ?? "").trim();
+  if (!/^(?:\d+\.?\d*|\.\d+)$/.test(value)) return null;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function resolvePositiveIntegerEnvWithFallback(
+  env,
+  primaryKey,
+  fallbackKey,
+  defaultValue,
+) {
+  const primary = parseOptionalPositiveIntegerEnv(env[primaryKey]);
+  if (primary !== null) return primary;
+  const fallback = parseOptionalPositiveIntegerEnv(env[fallbackKey]);
+  return fallback !== null ? fallback : defaultValue;
+}
+
+function resolvePositiveFloatEnvWithFallback(
+  env,
+  primaryKey,
+  fallbackKey,
+  defaultValue,
+) {
+  const primary = parseOptionalPositiveFloatEnv(env[primaryKey]);
+  if (primary !== null) return primary;
+  const fallback = parseOptionalPositiveFloatEnv(env[fallbackKey]);
+  return fallback !== null ? fallback : defaultValue;
+}
+
+function resolveStringEnvWithFallback(env, primaryKey, fallbackKey, defaultValue) {
+  const primary = String(env[primaryKey] ?? "").trim();
+  if (primary) return primary;
+  const fallback = String(env[fallbackKey] ?? "").trim();
+  return fallback || defaultValue;
+}
+
 function getMissingCloudflareOutputConfig(config) {
   return ["CF_API_TOKEN", "CF_ZONE_ID", "CF_DOMAIN"].filter(
     (key) => !config[key],
@@ -379,12 +422,20 @@ async function syncS3IpList(config, finalHealthyIps, deps = {}) {
 }
 
 function parseRuntimeConfig(env) {
+  const maxIps = parsePositiveIntegerEnv(env.MAX_IPS, 2);
+  const sharedDuration = resolvePositiveIntegerEnvWithFallback(
+    env,
+    "IP_SYNC_SPEED_TEST_DURATION_S",
+    "CFST_SELECT_SPEED_TEST_DURATION_S",
+    10,
+  );
+
   return {
     CF_API_TOKEN: env.CF_API_TOKEN,
     CF_ZONE_ID: env.CF_ZONE_ID,
     CF_DOMAIN: env.CF_DOMAIN,
     CF_IP_POOL: env.CF_IP_POOL || "",
-    MAX_IPS: parsePositiveIntegerEnv(env.MAX_IPS, 2),
+    MAX_IPS: maxIps,
     NOTIFY_THRESHOLD: parseNonNegativeIntegerEnv(env.NOTIFY_THRESHOLD, 2),
     IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
     GITHUB_TOKEN: env.GITHUB_TOKEN,
@@ -397,13 +448,42 @@ function parseRuntimeConfig(env) {
     S3_ACCESS_KEY_ID: (env.S3_ACCESS_KEY_ID || "").trim(),
     S3_SECRET_ACCESS_KEY: (env.S3_SECRET_ACCESS_KEY || "").trim(),
     S3_ALLOW_HTTP: parseBooleanEnv(env.S3_ALLOW_HTTP),
-    CFST_LATENCY_THRESHOLD: parsePositiveIntegerEnv(env.CFST_LATENCY_THRESHOLD, 500),
-    DOWNLOAD_SPEED_THRESHOLD_MBPS:
-      parseFloat(env.DOWNLOAD_SPEED_THRESHOLD_MBPS) || 10,
-    SPEED_TEST_DURATION_S: parsePositiveIntegerEnv(env.SPEED_TEST_DURATION_S, 10),
-    CFST_TEST_COUNT: parsePositiveIntegerEnv(env.CFST_TEST_COUNT, 30),
-    LATENCY_TEST_CONCURRENCY: parsePositiveIntegerEnv(env.LATENCY_TEST_CONCURRENCY, 200),
-    CFST_SPEED_TEST_URL: env.CFST_SPEED_TEST_URL || "",
+    IP_SYNC_LATENCY_THRESHOLD: resolvePositiveIntegerEnvWithFallback(
+      env,
+      "IP_SYNC_LATENCY_THRESHOLD",
+      "CFST_SELECT_LATENCY_THRESHOLD",
+      500,
+    ),
+    IP_SYNC_TEST_COUNT: resolvePositiveIntegerEnvWithFallback(
+      env,
+      "IP_SYNC_TEST_COUNT",
+      "CFST_SELECT_TEST_COUNT",
+      30,
+    ),
+    IP_SYNC_LATENCY_TEST_CONCURRENCY: resolvePositiveIntegerEnvWithFallback(
+      env,
+      "IP_SYNC_LATENCY_TEST_CONCURRENCY",
+      "CFST_SELECT_LATENCY_TEST_CONCURRENCY",
+      200,
+    ),
+    IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS: resolvePositiveFloatEnvWithFallback(
+      env,
+      "IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS",
+      "CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS",
+      10,
+    ),
+    IP_SYNC_SPEED_TEST_URL: resolveStringEnvWithFallback(
+      env,
+      "IP_SYNC_SPEED_TEST_URL",
+      "CFST_SELECT_SPEED_TEST_URL",
+      "",
+    ),
+    IP_SYNC_SPEED_TEST_DURATION_S:
+      parseOptionalPositiveIntegerEnv(env.IP_SYNC_SPEED_TEST_DURATION_S) ??
+      getSpeedModeDurationSeconds(sharedDuration),
+    IP_SYNC_SPEED_CANDIDATE_COUNT:
+      parseOptionalPositiveIntegerEnv(env.IP_SYNC_SPEED_CANDIDATE_COUNT) ??
+      getSpeedModeCandidateCount(maxIps),
   };
 }
 
@@ -559,19 +639,19 @@ async function defaultRunCfst({
     "-f",
     inputFilePath,
     "-tl",
-    String(config.CFST_LATENCY_THRESHOLD),
+    String(config.IP_SYNC_LATENCY_THRESHOLD),
     "-sl",
-    String(config.DOWNLOAD_SPEED_THRESHOLD_MBPS),
+    String(config.IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS),
     "-dn",
-    String(config.CFST_TEST_COUNT || Math.max(config.MAX_IPS, 10)),
+    String(config.IP_SYNC_TEST_COUNT || Math.max(config.MAX_IPS, 10)),
     "-dt",
-    String(config.SPEED_TEST_DURATION_S),
+    String(config.IP_SYNC_SPEED_TEST_DURATION_S),
     "-n",
-    String(config.LATENCY_TEST_CONCURRENCY),
+    String(config.IP_SYNC_LATENCY_TEST_CONCURRENCY),
   ];
 
-  if (config.CFST_SPEED_TEST_URL) {
-    args.push("-url", config.CFST_SPEED_TEST_URL);
+  if (config.IP_SYNC_SPEED_TEST_URL) {
+    args.push("-url", config.IP_SYNC_SPEED_TEST_URL);
   }
 
   const exitCode = await spawnWithCleanOutput(cfstBinaryPath, args, {
@@ -801,9 +881,9 @@ async function mapWithConcurrencyLimit(items, concurrency, iteratee) {
 async function selectIpsByLatency(poolIps, config, deps = {}) {
   const probe = deps.testIp || testIp;
   const probeConcurrency =
-    Number.isInteger(config.LATENCY_TEST_CONCURRENCY) &&
-    config.LATENCY_TEST_CONCURRENCY > 0
-      ? config.LATENCY_TEST_CONCURRENCY
+    Number.isInteger(config.IP_SYNC_LATENCY_TEST_CONCURRENCY) &&
+    config.IP_SYNC_LATENCY_TEST_CONCURRENCY > 0
+      ? config.IP_SYNC_LATENCY_TEST_CONCURRENCY
       : 200;
   const results = await mapWithConcurrencyLimit(
     poolIps,
@@ -836,9 +916,9 @@ function getSpeedModeCandidateCount(maxIps) {
 async function selectIpsBySpeed(poolIps, config, deps = {}) {
   const probe = deps.testIp || testIp;
   const probeConcurrency =
-    Number.isInteger(config.LATENCY_TEST_CONCURRENCY) &&
-    config.LATENCY_TEST_CONCURRENCY > 0
-      ? config.LATENCY_TEST_CONCURRENCY
+    Number.isInteger(config.IP_SYNC_LATENCY_TEST_CONCURRENCY) &&
+    config.IP_SYNC_LATENCY_TEST_CONCURRENCY > 0
+      ? config.IP_SYNC_LATENCY_TEST_CONCURRENCY
       : 200;
   const probeResults = await mapWithConcurrencyLimit(
     poolIps,
@@ -846,7 +926,7 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     (ip) => probe(ip),
   );
   const candidates = sortHealthyEntries(probeResults)
-    .slice(0, getSpeedModeCandidateCount(config.MAX_IPS))
+    .slice(0, config.IP_SYNC_SPEED_CANDIDATE_COUNT)
     .map((result) => result.ip);
 
   if (candidates.length === 0) {
@@ -871,18 +951,11 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
   if (fs.existsSync(resultCsvPath)) fs.unlinkSync(resultCsvPath);
 
   const runCfst = deps.runCfst || defaultRunCfst;
-  const speedConfig = {
-    ...config,
-    SPEED_TEST_DURATION_S: getSpeedModeDurationSeconds(
-      config.SPEED_TEST_DURATION_S,
-    ),
-    CFST_TEST_COUNT: candidates.length,
-  };
   await runCfst({
     cfstBinaryPath,
     inputFilePath,
     resultCsvPath,
-    config: speedConfig,
+    config,
   });
 
   return buildSpeedSelection(

@@ -226,15 +226,15 @@ function loadConfig() {
   const config = {};
   const envConfig = {
     ip_source_url: process.env.IP_SOURCE_URL,
-    cfst_latency_threshold: process.env.CFST_LATENCY_THRESHOLD ? parseInt(process.env.CFST_LATENCY_THRESHOLD) : undefined,
-    speed_test_duration_s: process.env.SPEED_TEST_DURATION_S ? parseInt(process.env.SPEED_TEST_DURATION_S) : undefined,
-    download_speed_threshold_mbps: process.env.DOWNLOAD_SPEED_THRESHOLD_MBPS ? parseFloat(process.env.DOWNLOAD_SPEED_THRESHOLD_MBPS) : undefined,
+    cfst_select_latency_threshold: process.env.CFST_SELECT_LATENCY_THRESHOLD ? parseInt(process.env.CFST_SELECT_LATENCY_THRESHOLD) : undefined,
+    cfst_select_speed_test_duration_s: process.env.CFST_SELECT_SPEED_TEST_DURATION_S ? parseInt(process.env.CFST_SELECT_SPEED_TEST_DURATION_S) : undefined,
+    cfst_select_download_speed_threshold_mbps: process.env.CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS ? parseFloat(process.env.CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS) : undefined,
     preferred_ip_count: process.env.PREFERRED_IP_COUNT ? parseInt(process.env.PREFERRED_IP_COUNT) : undefined,
-    cfst_test_count: process.env.CFST_TEST_COUNT ? parseInt(process.env.CFST_TEST_COUNT) : undefined,
-    latency_test_concurrency: process.env.LATENCY_TEST_CONCURRENCY ? parseInt(process.env.LATENCY_TEST_CONCURRENCY) : undefined,
+    cfst_select_test_count: process.env.CFST_SELECT_TEST_COUNT ? parseInt(process.env.CFST_SELECT_TEST_COUNT) : undefined,
+    cfst_select_latency_test_concurrency: process.env.CFST_SELECT_LATENCY_TEST_CONCURRENCY ? parseInt(process.env.CFST_SELECT_LATENCY_TEST_CONCURRENCY) : undefined,
     ip_random_source_url: process.env.IP_RANDOM_SOURCE_URL,
     ip_random_sample_count: process.env.IP_RANDOM_SAMPLE_COUNT ? parseInt(process.env.IP_RANDOM_SAMPLE_COUNT) : undefined,
-    cfst_speed_test_url: process.env.CFST_SPEED_TEST_URL
+    cfst_select_speed_test_url: process.env.CFST_SELECT_SPEED_TEST_URL
   };
 
   // 兼容青龙 config.sh / config.json（保持原脚本能力）
@@ -269,15 +269,15 @@ function loadConfig() {
   };
 
   mergeConfig('ip_source_url', envConfig.ip_source_url, qlConfig.ip_source_url, null);
-  mergeConfig('latency_threshold_ms', envConfig.cfst_latency_threshold, qlConfig.cfst_latency_threshold, 500);
-  mergeConfig('speed_test_duration_s', envConfig.speed_test_duration_s, qlConfig.speed_test_duration_s, 10);
-  mergeConfig('download_speed_threshold_mbps', envConfig.download_speed_threshold_mbps, qlConfig.download_speed_threshold_mbps, 10);
-  mergeConfig('cfst_test_count', envConfig.cfst_test_count, qlConfig.cfst_test_count, 30);
+  mergeConfig('cfst_select_latency_threshold', envConfig.cfst_select_latency_threshold, qlConfig.cfst_select_latency_threshold, 500);
+  mergeConfig('cfst_select_speed_test_duration_s', envConfig.cfst_select_speed_test_duration_s, qlConfig.cfst_select_speed_test_duration_s, 10);
+  mergeConfig('cfst_select_download_speed_threshold_mbps', envConfig.cfst_select_download_speed_threshold_mbps, qlConfig.cfst_select_download_speed_threshold_mbps, 10);
+  mergeConfig('cfst_select_test_count', envConfig.cfst_select_test_count, qlConfig.cfst_select_test_count, 30);
   mergeConfig('preferred_ip_count', envConfig.preferred_ip_count, qlConfig.preferred_ip_count, 10);
-  mergeConfig('latency_test_concurrency', envConfig.latency_test_concurrency, qlConfig.latency_test_concurrency, 200);
+  mergeConfig('cfst_select_latency_test_concurrency', envConfig.cfst_select_latency_test_concurrency, qlConfig.cfst_select_latency_test_concurrency, 200);
   mergeConfig('ip_random_source_url', envConfig.ip_random_source_url, qlConfig.ip_random_source_url, null);
   mergeConfig('ip_random_sample_count', envConfig.ip_random_sample_count, qlConfig.ip_random_sample_count, 300);
-  mergeConfig('cfst_speed_test_url', envConfig.cfst_speed_test_url, qlConfig.cfst_speed_test_url, null);
+  mergeConfig('cfst_select_speed_test_url', envConfig.cfst_select_speed_test_url, qlConfig.cfst_select_speed_test_url, null);
 
   if (!config.ip_source_url && !config.ip_random_source_url) {
     console.error('错误: 请至少配置 IP_SOURCE_URL 或 IP_RANDOM_SOURCE_URL');
@@ -288,11 +288,11 @@ function loadConfig() {
 
 function displayConfig(config) {
   console.log(`数据目录: ${DATA_DIR}`);
-  console.log(`速度测试 URL: ${config.cfst_speed_test_url ? config.cfst_speed_test_url : '[使用 CloudflareST 默认地址]'}`);
-  console.log(`下载速度阈值: ${config.download_speed_threshold_mbps} MB/s`);
-  console.log(`延迟测试阈值: ${config.latency_threshold_ms} ms`);
-  console.log(`测速时长: ${config.speed_test_duration_s} s`);
-  console.log(`CFST 测速测试数量: ${config.cfst_test_count}`);
+  console.log(`速度测试 URL: ${config.cfst_select_speed_test_url ? config.cfst_select_speed_test_url : '[使用 CloudflareST 默认地址]'}`);
+  console.log(`下载速度阈值: ${config.cfst_select_download_speed_threshold_mbps} MB/s`);
+  console.log(`延迟测试阈值: ${config.cfst_select_latency_threshold} ms`);
+  console.log(`测速时长: ${config.cfst_select_speed_test_duration_s} s`);
+  console.log(`CFST 测速测试数量: ${config.cfst_select_test_count}`);
   console.log(`最终保存优选IP数量: ${config.preferred_ip_count}`);
 }
 
@@ -441,14 +441,14 @@ async function main() {
 
   const cfstArgs = [
     '-f', TEMP_IP_FILE,
-    '-tl', config.latency_threshold_ms,
-    '-sl', config.download_speed_threshold_mbps,
-    '-dn', config.cfst_test_count || Math.max(config.preferred_ip_count, 10),
-    '-dt', config.speed_test_duration_s
+    '-tl', config.cfst_select_latency_threshold,
+    '-sl', config.cfst_select_download_speed_threshold_mbps,
+    '-dn', config.cfst_select_test_count || Math.max(config.preferred_ip_count, 10),
+    '-dt', config.cfst_select_speed_test_duration_s
   ];
 
-  if (config.cfst_speed_test_url) cfstArgs.push('-url', config.cfst_speed_test_url);
-  cfstArgs.push('-n', normalizeLatencyTestConcurrency(config.latency_test_concurrency));
+  if (config.cfst_select_speed_test_url) cfstArgs.push('-url', config.cfst_select_speed_test_url);
+  cfstArgs.push('-n', normalizeLatencyTestConcurrency(config.cfst_select_latency_test_concurrency));
 
   console.log(`\n============== 开始执行 CloudflareSpeedTest ==============`);
   console.log(`CMD: ${cfstExecutable} ${cfstArgs.join(' ')}\n`);

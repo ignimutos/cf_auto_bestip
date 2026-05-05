@@ -18,24 +18,25 @@ export IP_RANDOM_SOURCE_URL="https://www.cloudflare.com/ips-v4"
 export IP_RANDOM_SAMPLE_COUNT=10000
 
 # 下载速度门槛（MB/s，默认 10）
-export DOWNLOAD_SPEED_THRESHOLD_MBPS=10
+export CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS=10
 
 # 每个节点测速持续时间（秒，默认 10）
-# 在 ip_sync.js 的 speed 模式下，实际传给 CloudflareST 的值会取 max(3, floor(该值/2))
-export SPEED_TEST_DURATION_S=10
+export CFST_SELECT_SPEED_TEST_DURATION_S=10
 
 # 最终保存优选 IP 数量（默认 10）
 export PREFERRED_IP_COUNT=10
 
 # CloudflareST 参与下载测速的候选数量（默认 30）
-# 在 ip_sync.js 的 speed 模式下，实际会固定改为探活成功后延迟最低的前 MAX_IPS*3 个候选
-export CFST_TEST_COUNT=30
+export CFST_SELECT_TEST_COUNT=30
 
 # CloudflareST 延迟阈值（毫秒，默认 500）
-export CFST_LATENCY_THRESHOLD=500
+export CFST_SELECT_LATENCY_THRESHOLD=500
 
 # CloudflareST 自定义测速地址（可选）
-export CFST_SPEED_TEST_URL=
+export CFST_SELECT_SPEED_TEST_URL=
+
+# CloudflareST 并发数（默认 200）
+export CFST_SELECT_LATENCY_TEST_CONCURRENCY=200
 
 # GitHub 加速代理地址（可选）
 export github_proxy=
@@ -70,8 +71,26 @@ export CF_DOMAIN=
 # 其它值都会按 latency 处理
 export IP_UPDATE_MODE=latency
 
-# 轻量探活 / CloudflareST 并发数（默认 200）
-export LATENCY_TEST_CONCURRENCY=200
+# 未设置时回退到 CFST_SELECT_LATENCY_THRESHOLD（默认 500）
+export IP_SYNC_LATENCY_THRESHOLD=
+
+# 未设置时回退到 CFST_SELECT_TEST_COUNT（默认 30）
+export IP_SYNC_TEST_COUNT=
+
+# 未设置时回退到 CFST_SELECT_LATENCY_TEST_CONCURRENCY（默认 200）
+export IP_SYNC_LATENCY_TEST_CONCURRENCY=
+
+# 未设置时回退到 CFST_SELECT_DOWNLOAD_SPEED_THRESHOLD_MBPS（默认 10）
+export IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS=
+
+# 若设置则直接传给 CloudflareST；未设置时才基于 CFST_SELECT_SPEED_TEST_DURATION_S 计算 max(3, floor(x/2))
+export IP_SYNC_SPEED_TEST_DURATION_S=
+
+# 未设置时回退到 CFST_SELECT_SPEED_TEST_URL
+export IP_SYNC_SPEED_TEST_URL=
+
+# 若设置则直接作为 speed 模式二阶段候选数量；未设置时才按 MAX_IPS*3 计算
+export IP_SYNC_SPEED_CANDIDATE_COUNT=
 
 # 最终保留在 DNS 解析中的健康 IP 数量（默认 2）
 export MAX_IPS=2
