@@ -8,7 +8,7 @@
 ## ================================
 
 # 固定候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
-export IP_SOURCE_URL="https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
+export IP_SOURCE_URL="https://ipdb.api.030101.xyz/?type=bestcf,https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
 
 # 随机候选 IP 来源（可多个，支持 URL / 本地文件 / 单个 IP，逗号分隔）
 export IP_RANDOM_SOURCE_URL="https://www.cloudflare.com/ips-v4"
@@ -44,8 +44,16 @@ export LOCAL_DATA_DIR=./data
 
 
 ## ================================
-## Cloudflare IP 同步（ip_sync.js）
+## IP 同步（ip_sync.js）
 ## ================================
+
+# 候选 IP 池：支持
+# - 直接 IP：1.1.1.1,8.8.8.8
+# - 远程 URL：http(s)://...
+# - 本地文件路径：./data/cfst_select/preferred_ips.txt 或 /abs/path/xxx.txt
+# 若留空，脚本默认读取 ./data/cfst_select/preferred_ips.txt
+export CF_IP_POOL="./data/cfst_preferred_ips.txt,https://ipdb.api.030101.xyz/?type=bestcf,https://ip.v2too.top/api/nodes,https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4,https://api.uouin.com/cloudflare.html"
+
 
 # Cloudflare API Token
 export CF_API_TOKEN=
@@ -55,14 +63,6 @@ export CF_ZONE_ID=
 
 # 需要同步的完整子域名
 export CF_DOMAIN=
-
-# 候选 IP 池：支持
-# - 直接 IP：1.1.1.1,8.8.8.8
-# - 远程 URL：http(s)://...
-# - 本地文件路径：./data/cfst_select/preferred_ips.txt 或 /abs/path/xxx.txt
-# 若留空，脚本默认读取 ./data/cfst_select/preferred_ips.txt
-export CF_IP_POOL=./data/cfst_select/preferred_ips.txt
-
 # 更新模式：
 # - latency：对候选池全部 IP 做轻量探活，选择延迟最低的健康 IP
 # - speed：先轻量探活并剔除失败 IP，再只对延迟最低的前 MAX_IPS*3 个候选做 CloudflareST 下载测速
