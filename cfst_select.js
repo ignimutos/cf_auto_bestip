@@ -1,4 +1,4 @@
-// cron "0 23 * * 4" cfst_test.js, tag:CFST优选测速
+// cron "0 23 * * 4" cfst_select.js, tag:CFST优选测速
 function Env(name) { this.name = name; }
 const $ = new Env('CFST优选测速');
 const fs = require('fs');
@@ -19,20 +19,35 @@ const {
   cidrToIps,
   expandCidrs,
   spawnWithCleanOutput,
-} = require('./util_shared');
+} = require('./utils/shared');
+
+function getSelectDataPaths(dataRootDir = resolveDataDir()) {
+  const dataDir = path.join(dataRootDir, 'cfst_select');
+  return {
+    dataRootDir,
+    dataDir,
+    outputSpeedFile: path.join(dataDir, 'speed_results.txt'),
+    outputIpFile: path.join(dataDir, 'valid_ips.txt'),
+    outputPreferredIpFile: path.join(dataDir, 'preferred_ips.txt'),
+    tempIpFile: path.join(dataDir, 'ips.txt'),
+    resultCsvFile: path.join(dataDir, 'result.csv'),
+  };
+}
 
 // ================================
 // 本地目录约定
 // ================================
 
 const CONFIG_TXT_PATH = path.join(__dirname, 'config.txt');
-const DATA_DIR = resolveDataDir();
+const SELECT_DATA_PATHS = getSelectDataPaths();
+const DATA_DIR = SELECT_DATA_PATHS.dataDir;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) { }
 
-const OUTPUT_SPEED_FILE = path.join(DATA_DIR, 'cfst_speed_results.txt');
-const OUTPUT_IP_FILE = path.join(DATA_DIR, 'cfst_valid_ips.txt');
-const OUTPUT_PREFERRED_IP_FILE = path.join(DATA_DIR, 'cfst_preferred_ips.txt');
-const TEMP_IP_FILE = path.join(DATA_DIR, 'cfst_ips.txt');
-const RESULT_CSV_FILE = path.join(DATA_DIR, 'result.csv');
+const OUTPUT_SPEED_FILE = SELECT_DATA_PATHS.outputSpeedFile;
+const OUTPUT_IP_FILE = SELECT_DATA_PATHS.outputIpFile;
+const OUTPUT_PREFERRED_IP_FILE = SELECT_DATA_PATHS.outputPreferredIpFile;
+const TEMP_IP_FILE = SELECT_DATA_PATHS.tempIpFile;
+const RESULT_CSV_FILE = SELECT_DATA_PATHS.resultCsvFile;
 
 // 优先：青龙环境变量(天然优先) > 青龙 config -> 再用本目录 config.txt 补齐默认值
 loadEnvFromQingLongConfigIfNeeded();
@@ -466,8 +481,18 @@ async function main() {
   console.log('=== 脚本成功运行结束 ===');
 }
 
-main().catch(async error => {
-  console.error(`脚本全局错误: ${error.stack}`);
-  await sendNotification('CFST 脚本崩溃', error.message);
-});
+module.exports = {
+  getSelectDataPaths,
+  loadConfig,
+  main,
+  parseCsvResults,
+  saveResults,
+};
+
+if (require.main === module) {
+  main().catch(async error => {
+    console.error(`脚本全局错误: ${error.stack}`);
+    await sendNotification('CFST 脚本崩溃', error.message);
+  });
+}
 

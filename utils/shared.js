@@ -1,5 +1,5 @@
 /**
- * Shared utilities for cfst_test.js and cf_ip_sync.js
+ * Shared utilities for cfst_select.js and ip_sync.js
  */
 
 const fs = require('fs');
@@ -7,11 +7,13 @@ const path = require('path');
 
 // --- Directory & config loading ---
 
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+
 function resolveDataDir() {
   const envDir = process.env.LOCAL_DATA_DIR;
   const resolved = envDir
-    ? path.isAbsolute(envDir) ? envDir : path.resolve(__dirname, envDir)
-    : path.join(__dirname, 'data');
+    ? path.isAbsolute(envDir) ? envDir : path.resolve(PROJECT_ROOT, envDir)
+    : path.join(PROJECT_ROOT, 'data');
   try { fs.mkdirSync(resolved, { recursive: true }); } catch (e) { }
   return resolved;
 }

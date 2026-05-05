@@ -19,7 +19,7 @@
 
 ## 🧩 脚本功能总览
 
-### 1) `cfst_test.js` - CloudflareSpeedTest 优选脚本
+### 1) `cfst_select.js` - CloudflareSpeedTest 优选脚本
 
 主要职责：
 
@@ -28,17 +28,17 @@
 - 🌐 从 `IP_SOURCE_URL` / `IP_RANDOM_SOURCE_URL` 获取候选 IP
 - 🎲 可对采样池随机抽样，降低测试成本
 - ⚙️ 调用 CloudflareSpeedTest 执行延迟 + 下载速度测试
-- 📄 解析 `result.csv` 结果并落盘本地文件：
-  - `data/cfst_speed_results.txt`（IP + 速度）
-  - `data/cfst_valid_ips.txt`（全部达标 IP）
-  - `data/cfst_preferred_ips.txt`（优选前 N 个 IP）
+- 📄 解析 `data/cfst_select/result.csv` 结果并落盘本地文件：
+  - `data/cfst_select/speed_results.txt`（IP + 速度）
+  - `data/cfst_select/valid_ips.txt`（全部达标 IP）
+  - `data/cfst_select/preferred_ips.txt`（优选前 N 个 IP）
 - 🔔 支持 `sendNotify.js` 通知（若存在）
 
 一句话：**负责“找出更快的 Cloudflare IP，并把结果保存到本地池”** ⚡
 
 ---
 
-### 2) `cf_ip_sync.js` - Cloudflare IP 同步脚本
+### 2) `ip_sync.js` - IP 同步脚本
 
 主要职责：
 
@@ -52,19 +52,19 @@
 
 一句话：**负责“从候选池选出最终 IP，并同步到已配置的输出目标”** 🧭
 
-若同时配置 DNS、Gist、S3/R2，`cf_ip_sync.js` 会并行执行三种输出，并分别汇总结果。
+若同时配置 DNS、Gist、S3/R2，`ip_sync.js` 会并行执行三种输出，并分别汇总结果。
 
 ---
 
 ## 🔄 推荐运行流程
 
-1. 先跑 `cfst_test.js` 生成优选池 `data/cfst_preferred_ips.txt`  
-2. 再由 `cf_ip_sync.js` 按高频周期从池中选出最终 IP 并同步输出目标
+1. 先跑 `cfst_select.js` 生成优选池 `data/cfst_select/preferred_ips.txt`  
+2. 再由 `ip_sync.js` 按高频周期从池中选出最终 IP 并同步输出目标
 
 可理解为：
 
-- `cfst_test.js` = 选手选拔赛 🏃
-- `cf_ip_sync.js` = 从候选名单里持续选出当前最合适的上场节点 🧑‍🔧
+- `cfst_select.js` = 选手选拔赛 🏃
+- `ip_sync.js` = 从候选名单里持续选出当前最合适的上场节点 🧑‍🔧
 
 ---
 
@@ -76,7 +76,7 @@
 - 同目录 `config.txt`
 - 青龙配置（`config.json` / `config.sh`）
 
-### `cfst_test.js` 常用变量
+### `cfst_select.js` 常用变量
 
 - `IP_SOURCE_URL`：固定候选 IP 来源（URL/文件/单个 IP，支持逗号分隔）
 - `IP_RANDOM_SOURCE_URL`：随机候选池来源
@@ -90,9 +90,9 @@
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `github_proxy`：下载 CloudflareST 的代理前缀（可选）
 
-### `cf_ip_sync.js` 常用变量
+### `ip_sync.js` 常用变量
 
-- `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_preferred_ips.txt`
+- `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_select/preferred_ips.txt`
 - `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
 - `MAX_IPS`：最终产出的 IP 数量（代码默认 2；你也可以在 `config.txt` 里按需改大）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
@@ -151,16 +151,16 @@ S3_SECRET_ACCESS_KEY=your_secret_access_key
 ### 3. 运行脚本
 
 ```bash
-node cfst_test.js
-node cf_ip_sync.js
+node cfst_select.js
+node ip_sync.js
 ```
 
 ---
 
 ## ⏰ 定时任务建议
 
-- `cfst_test.js`：低频（例如每天/每周）🗓️
-- `cf_ip_sync.js`：高频（例如每 5 分钟）⏱️
+- `cfst_select.js`：低频（例如每天/每周）🗓️
+- `ip_sync.js`：高频（例如每 5 分钟）⏱️
 
 这样既能持续刷新优选池，又能及时故障转移。
 
@@ -182,7 +182,7 @@ node cf_ip_sync.js
 你可以直接在青龙容器内执行（成功率最高）：
 
 ```bash
-ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_ip_sync" "README|LICENSE" "config" "" "js|txt"
+ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_select|ip_sync" "README|LICENSE" "config" "" "js|txt"
 ```
 
 参数含义（不同青龙版本参数个数可能不同；下面以此命令为准）：
@@ -199,7 +199,7 @@ ql repo https://github.com/lee1080/cf_auto_bestip.git "cfst_test|cf_ip_sync" "RE
 如果你的青龙版本支持「创建订阅 -> 名称」自动解析，可尝试：
 
 ```text
-cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_ip_sync#README|LICENSE#config##js|txt
+cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_select|ip_sync#README|LICENSE#config##js|txt
 ```
 
 说明（名称粘贴模式字段顺序）：
@@ -214,14 +214,14 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_i
 拉库完成后，在「定时任务」中新建两个任务：
 
 - 优选测速任务（低频）：
-  - 命令：`task cf_auto_bestip/cfst_test.js`
+  - 命令：`task cf_auto_bestip/cfst_select.js`
 - DNS 同步任务（高频）：
-  - 命令：`task cf_auto_bestip/cf_ip_sync.js`
+  - 命令：`task cf_auto_bestip/ip_sync.js`
 
 ### 3. 定时建议（Cron）
 
-- `cfst_test.js`：`0 23 * * 4`（每周四 23:00，可按需调整）🗓️
-- `cf_ip_sync.js`：`*/5 * * * *`（每 5 分钟）⏱️
+- `cfst_select.js`：`0 23 * * 4`（每周四 23:00，可按需调整）🗓️
+- `ip_sync.js`：`*/5 * * * *`（每 5 分钟）⏱️
 
 ### 4. 环境变量配置
 
@@ -235,22 +235,29 @@ cf_auto_bestip#https://github.com/lee1080/cf_auto_bestip.git#main#cfst_test|cf_i
 
 ### 5. 运行顺序建议
 
-- 先手动执行一次 `cfst_test.js`，确认生成 `data/cfst_preferred_ips.txt`
-- 再执行 `cf_ip_sync.js`，确认 DNS 可正常更新
+- 先手动执行一次 `cfst_select.js`，确认生成 `data/cfst_select/preferred_ips.txt`
+- 再执行 `ip_sync.js`，确认 DNS 可正常更新
 - 最后开启定时任务自动运行 🔁
 
 ---
 
 ## 📁 产物文件
 
-默认在 `data/` 目录：
+默认在 `data/` 目录下按脚本拆分：
 
-- `cfst_speed_results.txt` - 测速结果（含速率）
-- `cfst_valid_ips.txt` - 达标 IP 列表
-- `cfst_preferred_ips.txt` - 优选 IP 池（供 DNS 同步脚本消费）
-- `cfst_ips.txt` - 本次测试输入 IP 临时文件
+### `data/cfst_select/`
+
+- `speed_results.txt` - 测速结果（含速率）
+- `valid_ips.txt` - 达标 IP 列表
+- `preferred_ips.txt` - 优选 IP 池（供 `ip_sync.js` 默认读取）
+- `ips.txt` - 本次测试输入 IP 临时文件
 - `result.csv` - CloudflareST 原始结果
-- `cf_ip_sync_gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
+
+### `data/ip_sync/`
+
+- `ips.txt` - `speed` 模式二阶段测速输入 IP 临时文件
+- `result.csv` - `speed` 模式二阶段 CloudflareST 原始结果
+- `gist_id.txt` - Gist ID 本地状态文件（删除后下次会新建新的 Gist）
 
 ---
 

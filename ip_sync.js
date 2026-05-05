@@ -1,4 +1,4 @@
-// cron "*/5 * * * *" cf_ip_sync.js, tag:Cloudflare IP同步
+// cron "*/5 * * * *" ip_sync.js, tag:Cloudflare IP同步
 function Env(name) {
   this.name = name;
 }
@@ -8,8 +8,8 @@ const syncEnv = new Env("Cloudflare IP同步");
  *
  * 本地存储协作版改动：
  * - 支持从同目录 `config.txt` 自动加载环境变量（缺失时补齐）
- * - CF_IP_POOL 支持“本地文件路径”（相对/绝对），用于直接读取 cfst_test.js 落盘的优选 IP 列表
- * - 若 CF_IP_POOL 为空，默认读取 `./data/cfst_preferred_ips.txt`
+ * - CF_IP_POOL 支持“本地文件路径”（相对/绝对），用于直接读取 cfst_select.js 落盘的优选 IP 列表
+ * - 若 CF_IP_POOL 为空，默认读取 `./data/cfst_select/preferred_ips.txt`
  */
 
 const fs = require("fs");
@@ -31,7 +31,24 @@ const {
   cidrToIps,
   expandCidrs,
   spawnWithCleanOutput,
-} = require("./util_shared");
+} = require("./utils/shared");
+
+function getSyncDataPaths(dataRootDir = resolveDataDir()) {
+  const dataDir = path.join(dataRootDir, "ip_sync");
+  return {
+    dataRootDir,
+    dataDir,
+    defaultPoolFile: path.join(dataRootDir, "cfst_select", "preferred_ips.txt"),
+    gistIdStateFile: path.join(dataDir, "gist_id.txt"),
+    inputFilePath: path.join(dataDir, "ips.txt"),
+    resultCsvPath: path.join(dataDir, "result.csv"),
+  };
+}
+
+function ensureDataDir(dirPath) {
+  fs.mkdirSync(dirPath, { recursive: true });
+  return dirPath;
+}
 
 // ================================
 // 兼容青龙/本地配置自动加载变量
@@ -43,13 +60,10 @@ const CONFIG_TXT_PATH = path.join(__dirname, "config.txt");
 loadEnvFromQingLongConfigIfNeeded();
 loadEnvFromConfigTxtIfNeeded(CONFIG_TXT_PATH);
 
-const DATA_DIR = resolveDataDir();
-const DEFAULT_POOL_FILE = path.join(DATA_DIR, "cfst_preferred_ips.txt");
-const GIST_ID_STATE_FILE = path.join(
-  __dirname,
-  "data",
-  "cf_ip_sync_gist_id.txt",
-);
+const SYNC_DATA_PATHS = getSyncDataPaths();
+const DATA_DIR = ensureDataDir(SYNC_DATA_PATHS.dataDir);
+const DEFAULT_POOL_FILE = SYNC_DATA_PATHS.defaultPoolFile;
+const GIST_ID_STATE_FILE = SYNC_DATA_PATHS.gistIdStateFile;
 const CFST_CANDIDATES =
   os.platform() === "win32"
     ? ["CloudflareST.exe", "cfst.exe"]
@@ -740,11 +754,11 @@ function buildSpeedSelection(results, maxIps) {
 }
 
 function getSpeedModeDurationSeconds(durationSeconds) {
-  return durationSeconds;
+  return Math.max(3, Math.floor(Number(durationSeconds) / 2));
 }
 
 function getSpeedModeCandidateCount(maxIps) {
-  return Math.max(1, Number(maxIps) * 5);
+  return Math.max(1, Number(maxIps) * 3);
 }
 
 async function selectIpsBySpeed(poolIps, config, deps = {}) {
@@ -759,15 +773,18 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     return buildSpeedSelection([], config.MAX_IPS);
   }
 
-  const dataDir = deps.dataDir || DATA_DIR;
-  const inputFilePath = path.join(dataDir, "cf_ip_sync_cfst_ips.txt");
-  const resultCsvPath = path.join(dataDir, "result.csv");
+  const dataPaths = deps.dataDir
+    ? getSyncDataPaths(deps.dataDir)
+    : { ...SYNC_DATA_PATHS, dataDir: DATA_DIR };
+  const dataDir = ensureDataDir(dataPaths.dataDir);
+  const inputFilePath = dataPaths.inputFilePath;
+  const resultCsvPath = dataPaths.resultCsvPath;
   const cfstBinaryPath =
     deps.cfstBinaryPath ||
     (deps.findExistingCfstBinary || findExistingCfstBinary)(__dirname);
 
   if (!cfstBinaryPath) {
-    throw new Error("未找到 CloudflareST，可先运行 cfst_test.js");
+    throw new Error("未找到 CloudflareST，可先运行 cfst_select.js");
   }
 
   fs.writeFileSync(inputFilePath, candidates.join("\n"), "utf8");
@@ -1046,6 +1063,7 @@ async function main() {
 
 module.exports = {
   applyDnsChanges,
+  getSyncDataPaths,
   buildS3PutObjectRequest,
   fetchCurrentDnsRecords,
   formatDnsOutputSummary,
