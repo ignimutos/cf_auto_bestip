@@ -210,12 +210,19 @@ function stripAnsi(text) {
   return String(text).replace(ANSI_ESCAPE_RE, '');
 }
 
+// A CloudflareST progress bar frame: "123 / 5000 [—▁▁] 可用: 45" or
+// "0 / 30 [____]". When stdout is not a TTY the tool repeats this frame
+// string with a trailing space (no \r), so we must recognize the frame
+// anywhere in the stream, not just after a newline.
+const FRAME_START_RE = /(\d+)\s*\/\s*(\d+)\s*\[/;
+const FRAME_FULL_RE = /(\d+)\s*\/\s*(\d+)\s*\[[↗↘↙↖↕↔_\-= ]+\]\s*(?:可用:\s*\d+)?/;
+
 /**
- * Spawn a process whose stdout uses \r for in-place progress bars
- * (like CloudflareST). Drops raw progress bar frames and instead
- * emits a normalized, throttled progress line so non-TTY log
- * viewers (QingLong) still get live feedback. Strips ANSI colors
- * from remaining lines so the final results table stays clean.
+ * Spawn a process whose stdout uses \r or repeated space-separated frames
+ * for in-place progress bars (like CloudflareST). Emits a normalized,
+ * throttled progress line so non-TTY log viewers (QingLong) still get
+ * live feedback. Strips ANSI colors from remaining lines so the final
+ * results table stays clean.
  */
 function spawnWithCleanOutput(command, args, options = {}) {
   const { spawn: spawnImpl } = require('child_process');
@@ -224,7 +231,7 @@ function spawnWithCleanOutput(command, args, options = {}) {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  let lineBuffer = '';
+  let buffer = '';
   let lastEmitted = '';
   let phase = null; // 'latency' | 'download' | null
   let lastProgressEmitAt = 0;
@@ -256,14 +263,10 @@ function spawnWithCleanOutput(command, args, options = {}) {
   };
 
   const emitProgress = (frame) => {
-    const cleanFrame = stripAnsi(frame);
-    // Counter pair is the one right before the bar brackets, e.g. "257 / 1077 [█...]"
-    const barIdx = cleanFrame.indexOf('[');
-    const countersPart = (barIdx >= 0 ? cleanFrame.slice(0, barIdx) : cleanFrame);
-    const counters = countersPart.match(PROGRESS_COUNTERS_RE);
-    if (!counters) return;
-    const done = parseInt(counters[1], 10);
-    const total = parseInt(counters[2], 10);
+    const m = frame.match(FRAME_FULL_RE);
+    if (!m) return;
+    const done = parseInt(m[1], 10);
+    const total = parseInt(m[2], 10);
     if (!Number.isInteger(done) || !Number.isInteger(total) || total <= 0) return;
 
     const percent = Math.min(100, Math.floor((done / total) * 100));
@@ -276,31 +279,52 @@ function spawnWithCleanOutput(command, args, options = {}) {
     lastProgressEmitAt = now;
 
     const phaseLabel = phase === 'latency' ? '延迟测速' : phase === 'download' ? '下载测速' : '测速';
-    const usable = cleanFrame.match(/可用:\s*(\d+)/);
+    const usable = frame.match(/可用:\s*(\d+)/);
     const usableSuffix = usable ? ` | 已可用 ${usable[1]}` : '';
     process.stdout.write(`${phaseLabel}进度: ${done}/${total} (${percent}%)${usableSuffix}\n`);
   };
 
-  const handleFrame = (frame) => {
-    if (PROGRESS_BAR_RE.test(frame)) emitProgress(frame);
+  // Scans the accumulated buffer for complete bar frames (a counter prefix
+  // followed by a closed bracket and optional "可用: N" label), consuming
+  // each matched frame plus its label so nothing leaks into line output.
+  // Returns the leftover text.
+  const processFrames = (buf) => {
+    let rest = buf;
+    for (;;) {
+      const m = rest.match(FRAME_START_RE);
+      if (!m) break;
+      const start = m.index;
+      const closeIdx = rest.indexOf(']', start);
+      if (closeIdx < 0) break; // frame not complete yet
+      const afterClose = rest[closeIdx + 1];
+      if (afterClose !== undefined && afterClose !== ' ' && afterClose !== '\r' && afterClose !== '\n') break;
+      let consumedEnd = closeIdx + 1;
+      // The "可用: N" label may be space-separated from the closing bracket.
+      const labelMatch = rest.slice(consumedEnd).match(/^\s*可用:\s*\d+\s*/);
+      const label = labelMatch ? labelMatch[0] : '';
+      if (labelMatch) consumedEnd += labelMatch[0].length;
+      emitProgress(rest.slice(start, closeIdx + 1) + label);
+      rest = rest.slice(consumedEnd);
+    }
+    return rest;
   };
 
   const onData = (data) => {
     const text = data.toString();
-    for (const ch of text) {
-      if (ch === '\n') {
-        handleFrame(lineBuffer);
-        const line = lineBuffer;
-        lineBuffer = '';
-        emit(line);
-        updatePhase(stripAnsi(line));
-      } else if (ch === '\r') {
-        handleFrame(lineBuffer);
-        lineBuffer = '';
-      } else {
-        lineBuffer += ch;
-      }
+    buffer += text;
+    // Emit complete newline-delimited lines first so the phase header
+    // ("开始延迟测速…") updates the label before any following frame.
+    for (;;) {
+      const nl = buffer.indexOf('\n');
+      if (nl < 0) break;
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      emit(line);
+      updatePhase(stripAnsi(line));
     }
+    // Then scan the remaining buffer (which may hold space-separated frames
+    // with no newline at all) for complete progress frames.
+    buffer = processFrames(buffer);
   };
 
   child.stdout.on('data', onData);
@@ -308,10 +332,8 @@ function spawnWithCleanOutput(command, args, options = {}) {
 
   return new Promise((resolve, reject) => {
     child.on('close', (code) => {
-      if (lineBuffer.trim()) {
-        handleFrame(lineBuffer);
-        emit(lineBuffer);
-      }
+      buffer = processFrames(buffer);
+      if (buffer.trim()) emit(buffer);
       resolve(code);
     });
     child.on('error', reject);
