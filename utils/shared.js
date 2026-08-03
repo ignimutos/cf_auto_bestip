@@ -202,11 +202,20 @@ function extractValidIpv4Candidates(text) {
 
 // --- cfst output cleaning (QingLong compatibility) ---
 
+const ANSI_ESCAPE_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
+const PROGRESS_BAR_RE = /\[[↗↘↙↖↕↔_\-= ]+\]/;
+const PROGRESS_COUNTERS_RE = /(\d+)\s*\/\s*(\d+)/;
+
+function stripAnsi(text) {
+  return String(text).replace(ANSI_ESCAPE_RE, '');
+}
+
 /**
  * Spawn a process whose stdout uses \r for in-place progress bars
- * (like CloudflareST). Filters out progress bar frames and only
- * emits clean, readable lines suitable for QingLong or other
- * non-TTY log viewers.
+ * (like CloudflareST). Drops raw progress bar frames and instead
+ * emits a normalized, throttled progress line so non-TTY log
+ * viewers (QingLong) still get live feedback. Strips ANSI colors
+ * from remaining lines so the final results table stays clean.
  */
 function spawnWithCleanOutput(command, args, options = {}) {
   const { spawn: spawnImpl } = require('child_process');
@@ -217,12 +226,15 @@ function spawnWithCleanOutput(command, args, options = {}) {
 
   let lineBuffer = '';
   let lastEmitted = '';
+  let phase = null; // 'latency' | 'download' | null
+  let lastProgressEmitAt = 0;
+  let lastProgressPercent = -1;
 
   const emit = (raw) => {
-    const trimmed = raw.trim();
+    const trimmed = stripAnsi(raw).trim();
     if (!trimmed) return;
     // Skip progress bar lines (brackets with progress indicators)
-    if (/\[[↗↘↙↖↕↔_\-= ]+\]/.test(trimmed)) return;
+    if (PROGRESS_BAR_RE.test(trimmed)) return;
     // Skip standalone fraction lines like "0 / 5000"
     if (/^\d+\s*\/\s*\d+\s*$/.test(trimmed)) return;
     if (trimmed === lastEmitted) return;
@@ -230,12 +242,64 @@ function spawnWithCleanOutput(command, args, options = {}) {
     process.stdout.write(trimmed + '\n');
   };
 
+  const updatePhase = (line) => {
+    const nextPhase =
+      line.includes('开始下载测速') ? 'download'
+      : line.includes('开始延迟测速') ? 'latency'
+      : phase;
+    if (nextPhase !== phase) {
+      phase = nextPhase;
+      // Reset throttle so the first frame of each phase always shows.
+      lastProgressEmitAt = 0;
+      lastProgressPercent = -1;
+    }
+  };
+
+  const emitProgress = (frame) => {
+    const cleanFrame = stripAnsi(frame);
+    // Counter pair is the one right before the bar brackets, e.g. "257 / 1077 [█...]"
+    const barIdx = cleanFrame.indexOf('[');
+    const countersPart = (barIdx >= 0 ? cleanFrame.slice(0, barIdx) : cleanFrame);
+    const counters = countersPart.match(PROGRESS_COUNTERS_RE);
+    if (!counters) return;
+    const done = parseInt(counters[1], 10);
+    const total = parseInt(counters[2], 10);
+    if (!Number.isInteger(done) || !Number.isInteger(total) || total <= 0) return;
+
+    const percent = Math.min(100, Math.floor((done / total) * 100));
+    const now = Date.now();
+    // Throttle: one line per second (unless 100%), and never repeat a
+    // percent we already reported within the last 5s.
+    if (percent < 100 && now - lastProgressEmitAt < 1000) return;
+    if (percent === lastProgressPercent && now - lastProgressEmitAt < 5000) return;
+    lastProgressPercent = percent;
+    lastProgressEmitAt = now;
+
+    const phaseLabel = phase === 'latency' ? '延迟测速' : phase === 'download' ? '下载测速' : '测速';
+    const usable = cleanFrame.match(/可用:\s*(\d+)/);
+    const usableSuffix = usable ? ` | 已可用 ${usable[1]}` : '';
+    process.stdout.write(`${phaseLabel}进度: ${done}/${total} (${percent}%)${usableSuffix}\n`);
+  };
+
+  const handleFrame = (frame) => {
+    if (PROGRESS_BAR_RE.test(frame)) emitProgress(frame);
+  };
+
   const onData = (data) => {
     const text = data.toString();
     for (const ch of text) {
-      if (ch === '\n') { emit(lineBuffer); lineBuffer = ''; }
-      else if (ch === '\r') { lineBuffer = ''; }
-      else { lineBuffer += ch; }
+      if (ch === '\n') {
+        handleFrame(lineBuffer);
+        const line = lineBuffer;
+        lineBuffer = '';
+        emit(line);
+        updatePhase(stripAnsi(line));
+      } else if (ch === '\r') {
+        handleFrame(lineBuffer);
+        lineBuffer = '';
+      } else {
+        lineBuffer += ch;
+      }
     }
   };
 
@@ -244,7 +308,10 @@ function spawnWithCleanOutput(command, args, options = {}) {
 
   return new Promise((resolve, reject) => {
     child.on('close', (code) => {
-      if (lineBuffer.trim()) emit(lineBuffer);
+      if (lineBuffer.trim()) {
+        handleFrame(lineBuffer);
+        emit(lineBuffer);
+      }
       resolve(code);
     });
     child.on('error', reject);
@@ -265,4 +332,5 @@ module.exports = {
   isValidIpv4,
   normalizeIpv4Candidate,
   spawnWithCleanOutput,
+  stripAnsi,
 };
