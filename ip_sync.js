@@ -958,6 +958,13 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     config,
   });
 
+  if (!fs.existsSync(resultCsvPath)) {
+    console.warn(
+      "  ⚠️ CloudflareST 未生成 result.csv，可能是候选全部未达标或测速异常",
+    );
+    return buildSpeedSelection([], config.MAX_IPS);
+  }
+
   return buildSpeedSelection(
     parseCfstCsvResults(resultCsvPath),
     config.MAX_IPS,
