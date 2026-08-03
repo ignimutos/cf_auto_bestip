@@ -948,7 +948,26 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
   }
 
   fs.writeFileSync(inputFilePath, candidates.join("\n"), "utf8");
-  if (fs.existsSync(resultCsvPath)) fs.unlinkSync(resultCsvPath);
+  const resultCsvBakPath = resultCsvPath + ".bak";
+  // 恢复上次意外中断遗留的备份：
+  // - 仅有 .bak 而无 result.csv（中断发生在备份后、结果落盘前）→ 还原 .bak
+  // - result.csv 与 .bak 并存（新结果已生成但清理被打断）→ 删除过期 .bak
+  try {
+    if (fs.existsSync(resultCsvBakPath)) {
+      if (fs.existsSync(resultCsvPath)) {
+        fs.unlinkSync(resultCsvBakPath);
+      } else {
+        fs.renameSync(resultCsvBakPath, resultCsvPath);
+      }
+    }
+  } catch (e) { }
+  // 运行前把上次的 result.csv 挪到 .bak，避免本次失败时误读旧结果；
+  // 若本轮未生成新 result.csv，再在下方还原 .bak。
+  try {
+    if (fs.existsSync(resultCsvPath)) {
+      fs.renameSync(resultCsvPath, resultCsvBakPath);
+    }
+  } catch (e) { }
 
   const runCfst = deps.runCfst || defaultRunCfst;
   await runCfst({
@@ -959,11 +978,22 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
   });
 
   if (!fs.existsSync(resultCsvPath)) {
+    // 本轮未生成新结果：还原上次的 result.csv，避免丢失
+    try {
+      if (fs.existsSync(resultCsvBakPath)) {
+        fs.renameSync(resultCsvBakPath, resultCsvPath);
+      }
+    } catch (e) { }
     console.warn(
       "  ⚠️ CloudflareST 未生成 result.csv，可能是候选全部未达标或测速异常",
     );
     return buildSpeedSelection([], config.MAX_IPS);
   }
+
+  // 本轮已生成新 result.csv，删除不再需要的 .bak
+  try {
+    if (fs.existsSync(resultCsvBakPath)) fs.unlinkSync(resultCsvBakPath);
+  } catch (e) { }
 
   return buildSpeedSelection(
     parseCfstCsvResults(resultCsvPath),

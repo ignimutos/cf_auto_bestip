@@ -435,9 +435,26 @@ async function main() {
   fs.writeFileSync(TEMP_IP_FILE, uniqueCleanIps.join('\n'));
   console.log(`已将 ${uniqueCleanIps.length} 个 IP 写入测试文件 ${TEMP_IP_FILE}`);
 
-  if (fs.existsSync(RESULT_CSV_FILE)) {
-    try { fs.unlinkSync(RESULT_CSV_FILE); } catch (e) { }
-  }
+  const RESULT_CSV_BAK_FILE = RESULT_CSV_FILE + '.bak';
+  // 恢复上次意外中断遗留的备份：
+  // - 仅有 .bak 而无 result.csv（中断发生在备份后、结果落盘前）→ 还原 .bak
+  // - result.csv 与 .bak 并存（新结果已生成但清理被打断）→ 删除过期 .bak
+  try {
+    if (fs.existsSync(RESULT_CSV_BAK_FILE)) {
+      if (fs.existsSync(RESULT_CSV_FILE)) {
+        fs.unlinkSync(RESULT_CSV_BAK_FILE);
+      } else {
+        fs.renameSync(RESULT_CSV_BAK_FILE, RESULT_CSV_FILE);
+      }
+    }
+  } catch (e) { }
+  // 运行前把上次的 result.csv 挪到 .bak，避免本次失败时误读旧结果；
+  // 若本轮未生成新 result.csv，再在下方还原 .bak。
+  try {
+    if (fs.existsSync(RESULT_CSV_FILE)) {
+      fs.renameSync(RESULT_CSV_FILE, RESULT_CSV_BAK_FILE);
+    }
+  } catch (e) { }
 
   const cfstArgs = [
     '-f', TEMP_IP_FILE,
@@ -464,10 +481,21 @@ async function main() {
   }
 
   if (!fs.existsSync(RESULT_CSV_FILE)) {
+    // 本轮未生成新结果：还原上次的 result.csv，避免丢失
+    try {
+      if (fs.existsSync(RESULT_CSV_BAK_FILE)) {
+        fs.renameSync(RESULT_CSV_BAK_FILE, RESULT_CSV_FILE);
+      }
+    } catch (e) { }
     console.error('未找到 result.csv，可能是没有节点达标或执行异常。');
     await sendNotification('CFST 测速失败', '未找到 result.csv，没有符合要求（延迟/速度）的 IP。');
     return;
   }
+
+  // 本轮已生成新 result.csv，删除不再需要的 .bak
+  try {
+    if (fs.existsSync(RESULT_CSV_BAK_FILE)) fs.unlinkSync(RESULT_CSV_BAK_FILE);
+  } catch (e) { }
 
   console.log('开始解析 CSV 结果...');
   const results = parseCsvResults(RESULT_CSV_FILE);
