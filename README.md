@@ -97,7 +97,7 @@
 - `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
 - `IP_UPDATE_STRATEGY`：`default` 或 `lazy`，默认 `default`。`lazy` 时优先对上次使用的 IP 列表按当前模式重新测速（延迟模式做延迟探活，下载测速模式跑 CloudflareST），可用 IP 仍 >= `MAX_IPS` 则直接复用、本轮跳过上传；否则回退到对完整候选池测速
 - `MAX_IPS`：最终产出的 IP 数量（代码默认 2；你也可以在 `config.txt` 里按需改大）
-- `NOTIFY_THRESHOLD`：告警阈值（默认 2）
+- `NOTIFY_THRESHOLD`：告警阈值（默认等于 `MAX_IPS`）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
 - `CF_API_TOKEN` / `CF_ZONE_ID` / `CF_DOMAIN`：可选；三者都存在时才同步 DNS
 - `GITHUB_TOKEN` / `GIST_NAME`：可选；两者都存在时才同步 Gist

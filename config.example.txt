@@ -116,7 +116,7 @@ export IP_SYNC_SPEED_CANDIDATE_COUNT=
 # 最终保留在 DNS 解析中的健康 IP 数量（默认 2）
 export MAX_IPS=2
 
-# 告警阈值（健康 IP <= 该值 且不足 MAX_IPS 时触发）
+# 告警阈值（健康 IP <= 该值 且不足 MAX_IPS 时触发；不设置时默认等于 MAX_IPS）
 export NOTIFY_THRESHOLD=2
 
 # GitHub Token（与 GIST_NAME 同时存在时启用 Gist 同步）

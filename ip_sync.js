@@ -453,7 +453,7 @@ function parseRuntimeConfig(env) {
     CF_DOMAIN: env.CF_DOMAIN,
     CF_IP_POOL: env.CF_IP_POOL || "",
     MAX_IPS: maxIps,
-    NOTIFY_THRESHOLD: parseNonNegativeIntegerEnv(env.NOTIFY_THRESHOLD, 2),
+    NOTIFY_THRESHOLD: parseNonNegativeIntegerEnv(env.NOTIFY_THRESHOLD, maxIps),
     IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
     IP_UPDATE_STRATEGY: normalizeIpUpdateStrategy(env.IP_UPDATE_STRATEGY),
     GITHUB_TOKEN: env.GITHUB_TOKEN,
