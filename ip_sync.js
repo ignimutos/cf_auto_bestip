@@ -92,6 +92,10 @@ function normalizeIpUpdateMode(rawMode) {
   return rawMode === "speed" ? "speed" : "latency";
 }
 
+function normalizeIpUpdateStrategy(rawStrategy) {
+  return rawStrategy === "lazy" ? "lazy" : "default";
+}
+
 function parseBooleanEnv(rawValue) {
   return (
     String(rawValue || "")
@@ -438,6 +442,7 @@ function parseRuntimeConfig(env) {
     MAX_IPS: maxIps,
     NOTIFY_THRESHOLD: parseNonNegativeIntegerEnv(env.NOTIFY_THRESHOLD, 2),
     IP_UPDATE_MODE: normalizeIpUpdateMode(env.IP_UPDATE_MODE),
+    IP_UPDATE_STRATEGY: normalizeIpUpdateStrategy(env.IP_UPDATE_STRATEGY),
     GITHUB_TOKEN: env.GITHUB_TOKEN,
     GIST_NAME: (env.GIST_NAME || "").trim(),
     GIST_SECRET: parseBooleanEnv(env.GIST_SECRET),
@@ -894,6 +899,42 @@ async function selectIpsByLatency(poolIps, config, deps = {}) {
   return buildLatencySelection(results, config.MAX_IPS);
 }
 
+function readPreviousIps(filePath = PREFERRED_OUTPUT_FILE) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    return parseIpsFromText(fs.readFileSync(filePath, "utf8"));
+  } catch (e) {
+    console.warn(`  ⚠️ 读取上次 IP 列表失败 ${filePath}: ${e.message}`);
+    return [];
+  }
+}
+
+/**
+ * 懒策略：对上次使用的 IP 列表按当前模式复用同一套选择逻辑
+ * （latency -> selectIpsByLatency，speed -> selectIpsBySpeed），
+ * 即传入的列表作为数据源。若可用 IP >= MAX_IPS 则复用；
+ * 否则返回 null，回退到对完整候选池测速。
+ */
+async function tryReusePreviousIps(previousIps, config, deps = {}) {
+  if (!previousIps || previousIps.length === 0) return null;
+
+  const selection =
+    config.IP_UPDATE_MODE === "speed"
+      ? await (deps.selectIpsBySpeed || selectIpsBySpeed)(
+          previousIps,
+          config,
+          deps,
+        )
+      : await (deps.selectIpsByLatency || selectIpsByLatency)(
+          previousIps,
+          config,
+          deps,
+        );
+
+  if (selection.finalHealthyIps.length < config.MAX_IPS) return null;
+  return { ...selection, strategy: "lazy", reused: true };
+}
+
 function buildSpeedSelection(results, maxIps) {
   const finalResults = results.slice(0, maxIps);
 
@@ -1203,6 +1244,8 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   const loadPool = deps.parseIpPool || parseIpPool;
   const pickByLatency = deps.selectIpsByLatency || selectIpsByLatency;
   const pickBySpeed = deps.selectIpsBySpeed || selectIpsBySpeed;
+  const readPrevious = deps.readPreviousIps || readPreviousIps;
+  const tryReuse = deps.tryReusePreviousIps || tryReusePreviousIps;
   const notify = deps.sendNotification || sendNotification;
   const writeOutputs = deps.syncOutputs || syncOutputs;
   const syncDataPaths = deps.syncDataPaths || SYNC_DATA_PATHS;
@@ -1214,10 +1257,25 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
     throw new Error("IP 池为空，无法继续同步");
   }
 
-  const selection =
-    config.IP_UPDATE_MODE === "speed"
-      ? await pickBySpeed(poolIps, config, deps)
-      : await pickByLatency(poolIps, config, deps);
+  let selection;
+  if (config.IP_UPDATE_STRATEGY === "lazy") {
+    const previousIps = readPrevious(syncDataPaths.preferredOutputFile);
+    if (previousIps.length > 0) {
+      selection = await tryReuse(previousIps, config, deps);
+      if (selection) {
+        console.log(
+          `♻️ 懒策略: 上次 IP 仍满足条件，直接复用 ${selection.finalHealthyIps.join(", ")}`,
+        );
+      }
+    }
+  }
+
+  if (!selection) {
+    selection =
+      config.IP_UPDATE_MODE === "speed"
+        ? await pickBySpeed(poolIps, config, deps)
+        : await pickByLatency(poolIps, config, deps);
+  }
   const finalHealthyIps = selection.finalHealthyIps;
 
   if (finalHealthyIps.length === 0) {
@@ -1278,15 +1336,18 @@ module.exports = {
   hasS3Output,
   loadRuntimeConfig,
   normalizeIpUpdateMode,
+  normalizeIpUpdateStrategy,
   parseBooleanEnv,
   parseRuntimeConfig,
   readGistIdStateFile,
+  readPreviousIps,
   runSync,
   selectIpsByLatency,
   selectIpsBySpeed,
   syncGistIpList,
   syncOutputs,
   syncS3IpList,
+  tryReusePreviousIps,
   writeGistIdStateFile,
 };
 

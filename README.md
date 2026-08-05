@@ -95,6 +95,7 @@
 
 - `CF_IP_POOL`：IP 池（URL/文件/IP，逗号分隔）；为空时默认读 `./data/cfst_select/preferred_ips.txt`
 - `IP_UPDATE_MODE`：`latency` 或 `speed`，默认 `latency`
+- `IP_UPDATE_STRATEGY`：`default` 或 `lazy`，默认 `default`。`lazy` 时优先对上次使用的 IP 列表按当前模式重新测速（`latency` 做延迟探活，`speed` 跑 CloudflareST 下载测速），可用 IP 仍 >= `MAX_IPS` 则直接继续使用，否则回退到对完整候选池测速
 - `MAX_IPS`：最终产出的 IP 数量（代码默认 2；你也可以在 `config.txt` 里按需改大）
 - `NOTIFY_THRESHOLD`：告警阈值（默认 2）
 - `LOCAL_DATA_DIR`：本地数据目录（默认 `./data`）
