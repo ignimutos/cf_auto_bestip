@@ -210,13 +210,13 @@ function formatInputSourceSummary({ directCount, urlCount, fileCount }) {
 
 function formatLatencySelectionSummary(selection) {
   return [
-    "📊 Latency 全量探测结果:",
+    "📊 延迟全量探测结果:",
     ...selection.allResults.map((result) =>
       result.success
         ? `   - ${result.ip} | ${result.latency} ms`
         : `   - ${result.ip} | ${result.reason || "failed"}`,
     ),
-    "✅ Latency 最终保留结果:",
+    "✅ 延迟最终保留结果:",
     ...selection.finalResults.map(
       (result) => `   - ${result.ip} | ${result.latency} ms`,
     ),
@@ -225,11 +225,11 @@ function formatLatencySelectionSummary(selection) {
 
 function formatSpeedSelectionSummary(selection) {
   return [
-    "📊 Speed 候选测速结果:",
+    "📊 下载测速结果:",
     ...selection.allResults.map(
       (result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`,
     ),
-    "✅ Speed 最终保留结果:",
+    "✅ 下载测速最终保留结果:",
     ...selection.finalResults.map(
       (result) => `   - ${result.ip} | ${result.speed.toFixed(2)} MB/s`,
     ),
@@ -244,7 +244,8 @@ function formatSelectionOutput(selection) {
 
   return [
     ...summaryLines,
-    `✅ 最终目标 IP 集合: [${selection.finalHealthyIps.join(", ")}]`,
+    "✅ 最终目标 IP 集合:",
+    ...selection.finalHealthyIps.map((ip) => `   - ${ip}`),
   ].join("\n");
 }
 
@@ -267,7 +268,13 @@ function formatGistOutputSummary(output) {
     return `❌ Gist: 同步失败 | 文件 ${output.filename} | ${output.error}`;
   }
   if (!output.result) return "";
-  return `📝 Gist 结果: ${output.result.action} | gistId ${output.result.gistId} | 文件 ${output.filename}`;
+  const actionLabel =
+    output.result.action === "updated"
+      ? "已更新"
+      : output.result.action === "created"
+        ? "已创建"
+        : output.result.action;
+  return `📝 Gist 结果: ${actionLabel} | gistId ${output.result.gistId} | 文件 ${output.filename}`;
 }
 
 function formatS3OutputSummary(output) {
@@ -278,7 +285,13 @@ function formatS3OutputSummary(output) {
     return `❌ S3: 上传失败 | bucket ${output.bucket} | key ${output.key} | ${output.error}`;
   }
   if (!output.result) return "";
-  return `📦 S3 结果: ${output.result.action} | bucket ${output.result.bucket} | key ${output.result.key}`;
+  const actionLabel =
+    output.result.action === "uploaded"
+      ? "已上传"
+      : output.result.action === "created"
+        ? "已创建"
+        : output.result.action;
+  return `📦 S3 结果: ${actionLabel} | 存储桶 ${output.result.bucket} | 对象 ${output.result.key}`;
 }
 
 function readGistIdStateFile(filePath = GIST_ID_STATE_FILE) {
@@ -1258,13 +1271,21 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   }
 
   let selection;
+  let reused = false;
   if (config.IP_UPDATE_STRATEGY === "lazy") {
     const previousIps = readPrevious(syncDataPaths.preferredOutputFile);
     if (previousIps.length > 0) {
       selection = await tryReuse(previousIps, config, deps);
       if (selection) {
+        reused = true;
         console.log(
-          `♻️ 懒策略: 上次 IP 仍满足条件，直接复用 ${selection.finalHealthyIps.join(", ")}`,
+          "♻️ 懒策略: 上次 IP 仍满足条件，直接复用，本轮跳过上传",
+        );
+        console.log(
+          [
+            "♻️ 懒策略复用 IP 列表:",
+            ...selection.finalHealthyIps.map((ip) => `   - ${ip}`),
+          ].join("\n"),
         );
       }
     }
@@ -1288,6 +1309,11 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
     };
   }
 
+  // 懒策略复用生效时：无需重新测速，也无需写文件或上传，直接结束
+  if (reused) {
+    return { poolIps, selection, finalHealthyIps, outputs: null };
+  }
+
   if (
     finalHealthyIps.length < config.MAX_IPS &&
     finalHealthyIps.length <= config.NOTIFY_THRESHOLD
@@ -1303,13 +1329,18 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   return { poolIps, selection, finalHealthyIps, outputs };
 }
 
+function formatUpdateModeLabel(rawMode) {
+  return rawMode === "speed" ? "下载测速" : "延迟";
+}
+
 async function main() {
   const config = loadRuntimeConfig();
   console.log("\n🚀 开始执行 Cloudflare IP 同步...");
   console.log(`数据目录: ${DATA_DIR}`);
-  console.log(`输出模式: ${config.IP_UPDATE_MODE}`);
+  console.log(`输出模式: ${formatUpdateModeLabel(config.IP_UPDATE_MODE)}`);
 
   const result = await runSync(config);
+  if (result.selection?.reused) return;
   console.log(formatSelectionOutput(result.selection));
 }
 

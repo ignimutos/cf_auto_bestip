@@ -73,9 +73,9 @@ export IP_UPDATE_MODE=latency
 
 # 更新策略：
 # - default：每次都对候选池重新完整测速（默认）
-# - lazy：优先对上次使用的 IP 列表按当前模式重新测速（latency 做延迟探活，
-#         speed 跑 CloudflareST 下载测速）；若可用 IP 仍 >= MAX_IPS 则直接继续使用，
-#         否则回退到对完整候选池测速
+# - lazy：优先对上次使用的 IP 列表按当前模式重新测速（延迟模式做延迟探活，
+#         下载测速模式跑 CloudflareST 下载测速）；若可用 IP 仍 >= MAX_IPS 则直接复用，
+#         本轮跳过上传直接结束；否则回退到对完整候选池测速
 # 其它值都会按 default 处理
 export IP_UPDATE_STRATEGY=default
 
