@@ -65,17 +65,30 @@ export CF_ZONE_ID=
 # 需要同步的完整子域名
 export CF_DOMAIN=
 
-# 更新模式：
-# - latency：对候选池全部 IP 做轻量探活，选择延迟最低的健康 IP
-# - speed：先轻量探活并剔除失败 IP，再只对延迟最低的前 MAX_IPS*3 个候选做 CloudflareST 下载测速
+# 更新模式（控制每个 IP 用什么标准判断好坏）：
+# - latency（默认）：对候选池全部 IP 做轻量探活（TCP 443 连一下），
+#                    保留延迟最低且健康的 MAX_IPS 个 IP；耗时短
+# - speed：先轻量探活剔除不通的 IP，再只对延迟最低的前 MAX_IPS*3 个候选
+#           跑 CloudflareST 下载测速，按下载速度排序保留前 MAX_IPS 个；
+#           结果更准，但会多一轮 CloudflareST 下载测速，耗时较长
 # 其它值都会按 latency 处理
 export IP_UPDATE_MODE=latency
 
-# 更新策略：
-# - default：每次都对候选池重新完整测速（默认）
-# - lazy：优先对上次使用的 IP 列表按当前模式重新测速（延迟模式做延迟探活，
-#         下载测速模式跑 CloudflareST 下载测速）；若可用 IP 仍 >= MAX_IPS 则直接复用，
-#         本轮跳过上传直接结束；否则回退到对完整候选池测速
+# 更新策略（控制每次运行测哪些 IP）：
+# - default（默认）：每次都对完整候选 IP 池重新测速，结果最新鲜，但耗时最长
+# - lazy：优先复用上次的优选 IP，减少重复测速、更快
+#   lazy 的具体流程（假设 MAX_IPS=2、模式为 speed）：
+#     0. 预判：若上次保存的 IP 数量本身就 < MAX_IPS（例如上次只存了 1 个 IP，
+#        而现在 MAX_IPS=2），说明上次列表无论测出几个健康 IP 都凑不够 MAX_IPS，
+#        直接跳到最后一步「对完整候选池重新测速」，不会多跑一轮无意义的测速
+#     1. 读取上次保存的优选 IP 列表（例如正好 2 个 IP）
+#     2. 只对这 2 个 IP 重新测速（latency 模式做延迟探活；speed 模式跑 CloudflareST 下载测速）
+#     3. 若这 2 个 IP 测速后仍全部可用（可用数 >= MAX_IPS=2）：
+#        直接继续使用它们，本轮不重选、不写文件、不上传，立即结束
+#     4. 若测速后可用数不足 MAX_IPS（如只剩 1 个）：
+#        说明上次的 IP 大多失效了，自动回退到「对完整候选池重新测速」，
+#        此时日志里会看到测速跑两次，属正常现象
+#   注意：首次运行还没有上次的 IP 列表，会直接走完整测速
 # 其它值都会按 default 处理
 export IP_UPDATE_STRATEGY=default
 

@@ -930,6 +930,10 @@ function readPreviousIps(filePath = PREFERRED_OUTPUT_FILE) {
  */
 async function tryReusePreviousIps(previousIps, config, deps = {}) {
   if (!previousIps || previousIps.length === 0) return null;
+  // 上次列表本身就不足 MAX_IPS：选中结果始终是输入的子集，
+  // 即 最终可用数 <= previousIps.length < MAX_IPS，复用必然失败，
+  // 无需浪费一次测速，直接返回 null 走全量回退。
+  if (previousIps.length < config.MAX_IPS) return null;
 
   const selection =
     config.IP_UPDATE_MODE === "speed"
@@ -1001,6 +1005,9 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     throw new Error("未找到 CloudflareST，可先运行 cfst_select.js");
   }
 
+  console.log(
+    `▶️ 下载测速: 探活通过 ${candidates.length} 个候选，启动 CloudflareST...`,
+  );
   fs.writeFileSync(inputFilePath, candidates.join("\n"), "utf8");
   const resultCsvBakPath = resultCsvPath + ".bak";
   // 恢复上次意外中断遗留的备份：
@@ -1274,18 +1281,35 @@ async function runSync(config = loadRuntimeConfig(), deps = {}) {
   let reused = false;
   if (config.IP_UPDATE_STRATEGY === "lazy") {
     const previousIps = readPrevious(syncDataPaths.preferredOutputFile);
-    if (previousIps.length > 0) {
+    const modeLabel =
+      config.IP_UPDATE_MODE === "speed" ? "下载测速" : "延迟探活";
+    if (previousIps.length === 0) {
+      console.log(
+        "♻️ 懒策略: 暂无上次的优选 IP（首次运行），直接对完整候选池测速",
+      );
+    } else if (previousIps.length < config.MAX_IPS) {
+      console.log(
+        `♻️ 懒策略: 上次的 IP 列表只有 ${previousIps.length} 个，不足 MAX_IPS=${config.MAX_IPS}，无需复用测速，直接对完整候选池（${poolIps.length} 个 IP）测速`,
+      );
+    } else {
+      console.log(
+        `♻️ 懒策略: 尝试复用上次的 ${previousIps.length} 个 IP，先对这 ${previousIps.length} 个 IP 做${modeLabel}...`,
+      );
       selection = await tryReuse(previousIps, config, deps);
       if (selection) {
         reused = true;
         console.log(
-          "♻️ 懒策略: 上次 IP 仍满足条件，直接复用，本轮跳过上传",
+          `♻️ 懒策略: 测速后可用 ${selection.finalHealthyIps.length} 个 IP（>= MAX_IPS=${config.MAX_IPS}），直接复用，本轮跳过上传`,
         );
         console.log(
           [
             "♻️ 懒策略复用 IP 列表:",
             ...selection.finalHealthyIps.map((ip) => `   - ${ip}`),
           ].join("\n"),
+        );
+      } else {
+        console.log(
+          `♻️ 懒策略: 上次的 IP 测速后可用数量不足 MAX_IPS=${config.MAX_IPS}，回退到对完整候选池（${poolIps.length} 个 IP）重新测速`,
         );
       }
     }
@@ -1338,6 +1362,11 @@ async function main() {
   console.log("\n🚀 开始执行 Cloudflare IP 同步...");
   console.log(`数据目录: ${DATA_DIR}`);
   console.log(`输出模式: ${formatUpdateModeLabel(config.IP_UPDATE_MODE)}`);
+  console.log(
+    config.IP_UPDATE_STRATEGY === "lazy"
+      ? "更新策略: lazy（优先复用上次 IP，失效才回退全量测速）"
+      : "更新策略: default（每次全量测速）",
+  );
 
   const result = await runSync(config);
   if (result.selection?.reused) return;
