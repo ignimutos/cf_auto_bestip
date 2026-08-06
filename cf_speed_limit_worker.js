@@ -166,11 +166,16 @@ async function proxyDown(request, env) {
   for (const [k, v] of params.entries()) upstream.searchParams.set(k, v);
   upstream.searchParams.set("bytes", String(bytes));
 
-  // 透传 Range；UA 用 UPSTREAM_UA > 客户端 UA > 兜底浏览器 UA。
-  // 强制 identity 避免上游压缩干扰限速计量
+  // Range：客户端带了就透传；否则主动请求所需字节区间。
+  // ⚠️ R2 / 静态文件会忽略 URL 查询参数（如 ?bytes=xxx），总是返回完整文件；
+  //    只有 Range 头能让它只返回所需部分，避免每次拉全量、长下载停滞。
   const upstreamHeaders = new Headers();
-  const range = request.headers.get("range");
-  if (range) upstreamHeaders.set("range", range);
+  const clientRange = request.headers.get("range");
+  if (clientRange) {
+    upstreamHeaders.set("range", clientRange);
+  } else {
+    upstreamHeaders.set("range", `bytes=0-${bytes - 1}`);
+  }
   upstreamHeaders.set("user-agent", getUpstreamUa(env, request));
   upstreamHeaders.set("accept-encoding", "identity");
 
@@ -193,6 +198,8 @@ async function proxyDown(request, env) {
     "access-control-expose-headers",
     "content-length, content-range",
   );
+  // 下游始终按单段 200 返回：清掉上游 206 的 content-range，避免混淆字节语义
+  respHeaders.delete("content-range");
 
   // HEAD 或上游未返回 body：原样透传状态即可
   if (
@@ -206,7 +213,8 @@ async function proxyDown(request, env) {
     });
   }
   // 上游出错（如 403/404）：透传状态码，不包装成 200
-  if (upstreamResp.status !== 200) {
+  // 注意：206 是合法的分段响应（我们主动发 Range 时上游回 206），必须和 200 一样透传 body
+  if (upstreamResp.status !== 200 && upstreamResp.status !== 206) {
     return new Response(null, {
       status: upstreamResp.status,
       headers: respHeaders,
