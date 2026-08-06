@@ -959,8 +959,14 @@ async function tryReusePreviousIps(previousIps, config, deps = {}) {
   return { ...selection, strategy: "lazy", reused: true };
 }
 
-function buildSpeedSelection(results, maxIps) {
-  const finalResults = results.slice(0, maxIps);
+function buildSpeedSelection(results, maxIps, minSpeedMbps) {
+  // CloudflareST 在 -dd 调试模式下会把未达标的 IP 也写入 result.csv，
+  // 因此这里按下载速度下限过滤，避免把 0.00 的 IP 当作可用。
+  // allResults 保留全量数据，便于排查“全部未达标”。
+  const qualified = minSpeedMbps
+    ? results.filter((result) => result.speed >= minSpeedMbps)
+    : results;
+  const finalResults = qualified.slice(0, maxIps);
 
   return {
     mode: "speed",
@@ -995,7 +1001,7 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     .map((result) => result.ip);
 
   if (candidates.length === 0) {
-    return buildSpeedSelection([], config.MAX_IPS);
+    return buildSpeedSelection([], config.MAX_IPS, config.IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS);
   }
 
   const dataPaths = deps.dataDir
@@ -1055,7 +1061,7 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
     console.warn(
       "  ⚠️ CloudflareST 未生成 result.csv，可能是候选全部未达标或测速异常",
     );
-    return buildSpeedSelection([], config.MAX_IPS);
+    return buildSpeedSelection([], config.MAX_IPS, config.IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS);
   }
 
   // 本轮已生成新 result.csv，删除不再需要的 .bak
@@ -1066,6 +1072,7 @@ async function selectIpsBySpeed(poolIps, config, deps = {}) {
   return buildSpeedSelection(
     parseCfstCsvResults(resultCsvPath),
     config.MAX_IPS,
+    config.IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS,
   );
 }
 
