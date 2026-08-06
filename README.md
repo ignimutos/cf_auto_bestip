@@ -187,6 +187,80 @@ node ip_sync.js
 
 ---
 
+## 📡 可选：测速文件中转限速 Worker
+
+默认情况下，CloudflareST 的下载测速直接请求 `speed.cloudflare.com/__down`，走的是 CF 公网测速节点，下载速率不可控。
+
+仓库根目录提供了一份 Cloudflare Worker 示例代码 **`cf_speed_limit_worker.js`**，可以把测速文件地址中转到自己部署的域名上，并按需限制下载速率：
+
+- 每个候选 IP 的实测下载速率被限制在可配置范围（默认 10 MB/s），避免全速下载拖垮出口带宽
+- 限速后，凡是能达到限速值的 IP 都是“达标”IP，更利于横向比较筛选
+- 强制每次回源、禁用缓存，确保测到被测 IP 的真实速度
+- 显式返回 `Content-Length` 并精确下发请求的字节数，确保 CloudflareST 能正确计量速度
+
+### 1. 部署 Worker
+
+新建 Worker（`wrangler` 或控制台面板均可），代码直接粘贴 `cf_speed_limit_worker.js` 内容，无需任何依赖。面板方式更简单：**Workers → 创建 Worker → 粘贴代码 → 部署**。
+
+也可用 `wrangler` 部署：
+
+```bash
+wrangler deploy cf_speed_limit_worker.js --name cf-speed-limit
+```
+
+### 2. 可选环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `UPSTREAM_URL` | `https://cf.xiu2.xyz/url` | 上游测速文件地址（CloudflareST 同款默认；建议部署时改成你自己的、对 HTTP/2 放行的地址，见下方说明；勿指向 Worker 自身） |
+| `UPSTREAM_UA` | 自动 | 请求上游时的浏览器 UA；未设置时用客户端 UA，客户端也没有则用 CFST 同款 UA 兜底 |
+| `SPEED_LIMIT` | `50m` | 限速值，支持 `512k` / `10m` / `1g`（裸数字按 MB/s） |
+| `DEFAULT_BYTES` | `104857600` | 未传 `bytes` 时的默认下载量（字节） |
+| `MAX_BYTES` | `1073741824` | 单次下载量硬上限（字节），防止滥用 |
+
+控制台在 Worker 的「设置 → 变量」中添加，或写入 `wrangler.toml`：
+
+```toml
+name = "cf-speed-limit"
+main = "cf_speed_limit_worker.js"
+compatibility_date = "2024-01-01"
+
+[vars]
+# UPSTREAM_URL = "https://speed.cloudflare.com/__down"  # 建议改成对 HTTP/2 放行的地址
+# UPSTREAM_UA = "Mozilla/5.0 ..."                       # 可选，指定上游请求的 UA
+SPEED_LIMIT = "50m"
+# DEFAULT_BYTES = 104857600                             # 未传 bytes 时的默认下载量
+# MAX_BYTES = 1073741824                                # 单次下载硬上限
+```
+
+### 3. 在本项目中使用
+
+测速地址为：
+
+```
+https://<worker-domain>/__down?bytes=104857600
+```
+
+**只需配置 `CFST_SELECT_SPEED_TEST_URL` 一个变量**即可让两个脚本都生效——`ip_sync.js` 的 `IP_SYNC_SPEED_TEST_URL` 为空时自动回退到它：
+
+```bash
+CFST_SELECT_SPEED_TEST_URL=https://<worker-domain>/__down?bytes=104857600
+```
+
+配置后，`cfst_select.js` 和 `ip_sync.js` 的下载测速都会走这个限速地址。若不想限速，把 `bytes` 调大即可（上限由 `MAX_BYTES` 控制）。
+
+> 也可单独给 `ip_sync.js` 配不同的地址：设置 `IP_SYNC_SPEED_TEST_URL` 后优先用它，留空则用 `CFST_SELECT_SPEED_TEST_URL`。
+
+> ⚠️ **踩坑提示（重要）**
+>
+> 1. **`UPSTREAM_URL` 不能指向 Worker 自己**：如果把 `UPSTREAM_URL` 设成 `https://<worker-domain>/__down`，会形成「/__down → 自身 → /__down」的**无限递归**，Cloudflare 边缘直接返回 **HTTP 522**。本示例已内置防自指检测（同 hostname 且路径为 `/__down` 时自动回退默认上游），但请勿故意这样配置。上游应指向一个真实的测速文件。
+> 2. **默认上游 `cf.xiu2.xyz/url` 可能被 403**：这是 CloudflareST 的默认地址，但它**对 HTTP/2 请求返回 403**（Cloudflare 的 bot 防护）。CloudflareST 本地能用它，是因为它自定义了 `DialContext` 导致 Go 走 **HTTP/1.1 → 302 → 成功**；而 **Worker 的 `fetch()` 强制走 HTTP/2**，所以 `cf.xiu2.xyz/url` 在 Worker 里可能直接 403。**建议部署时把 `UPSTREAM_URL` 改成对 HTTP/2 放行的地址**（如 `speed.cloudflare.com/__down`，或你自己部署的测速文件）。
+> 3. **限速值要高于测速门槛**：`SPEED_LIMIT` 必须大于 `IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS`（否则没有 IP 能“达标”，结果恒为空）。例如门槛 10 MB/s，限速建议设 `15m` 或更高（默认 `50m` 已覆盖绝大多数场景）。
+> 4. **Workers 的 TransformStream 不可用于限速**：Cloudflare Workers 只支持 identity TransformStream（原样转发），自定义 `transform` 处理器（含 `await sleep`）会**导致流提前断流**，表现为“浏览器能下载、但 CloudflareST 测速恒为 0”。本示例用 `ReadableStream` 的 pull 模式实现限速，避开了这个坑。
+> 5. **不要自己拼 `bytes` 太大导致超时**：下载量越大，单请求限速耗时越久（`bytes / SPEED_LIMIT`）。Workers 免费版对单请求有执行时长限制，测速文件建议控制在 50–200 MB，并把 `bytes` 与测速时长匹配。
+
+---
+
 ## 🐉 青龙面板拉库指南
 
 ### 1. 添加仓库订阅
