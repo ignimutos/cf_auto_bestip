@@ -33,6 +33,8 @@ export CFST_SELECT_TEST_COUNT=30
 export CFST_SELECT_LATENCY_THRESHOLD=500
 
 # CloudflareST 自定义测速地址（可选）
+# - 推荐配置自己部署的限速中转 Worker，例如 https://<worker-domain>/__down?bytes=104857600
+# - 该值同时作为 ip_sync.js 的 IP_SYNC_SPEED_TEST_URL 回退值（当 IP_SYNC_SPEED_TEST_URL 为空时）
 export CFST_SELECT_SPEED_TEST_URL=
 
 # CloudflareST 并发数（默认 200）
@@ -107,7 +109,7 @@ export IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS=
 # 若设置则直接传给 CloudflareST；未设置时才基于 CFST_SELECT_SPEED_TEST_DURATION_S 计算 max(3, floor(x/2))
 export IP_SYNC_SPEED_TEST_DURATION_S=
 
-# 未设置时回退到 CFST_SELECT_SPEED_TEST_URL
+# 自定义测速地址（可选）；未设置时回退到上面的 CFST_SELECT_SPEED_TEST_URL
 export IP_SYNC_SPEED_TEST_URL=
 
 # 若设置则直接作为 speed 模式二阶段候选数量；未设置时才按 MAX_IPS*3 计算

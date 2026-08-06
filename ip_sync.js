@@ -668,8 +668,15 @@ async function defaultRunCfst({
     String(config.IP_SYNC_LATENCY_TEST_CONCURRENCY),
   ];
 
+  // 调试模式：即使没有 IP 达到下载速度下限，也把全部测速数据写入 result.csv，
+  // 便于排查“全部未达标”是候选确实慢、还是测速地址异常
+  args.push("-dd");
+
   if (config.IP_SYNC_SPEED_TEST_URL) {
     args.push("-url", config.IP_SYNC_SPEED_TEST_URL);
+    console.log(`测速地址: ${config.IP_SYNC_SPEED_TEST_URL}`);
+  } else {
+    console.log("测速地址: (未配置，使用 CloudflareST 默认地址)");
   }
 
   const exitCode = await spawnWithCleanOutput(cfstBinaryPath, args, {
