@@ -258,6 +258,7 @@ CFST_SELECT_SPEED_TEST_URL=https://<worker-domain>/__down?bytes=104857600
 > 3. **限速值要高于测速门槛**：`SPEED_LIMIT` 必须大于 `IP_SYNC_DOWNLOAD_SPEED_THRESHOLD_MBPS`（否则没有 IP 能“达标”，结果恒为空）。例如门槛 10 MB/s，限速建议设 `15m` 或更高（默认 `50m` 已覆盖绝大多数场景）。
 > 4. **Workers 的 TransformStream 不可用于限速**：Cloudflare Workers 只支持 identity TransformStream（原样转发），自定义 `transform` 处理器（含 `await sleep`）会**导致流提前断流**，表现为“浏览器能下载、但 CloudflareST 测速恒为 0”。本示例用 `ReadableStream` 的 pull 模式实现限速，避开了这个坑。
 > 5. **不要自己拼 `bytes` 太大导致超时**：下载量越大，单请求限速耗时越久（`bytes / SPEED_LIMIT`）。Workers 免费版对单请求有执行时长限制，测速文件建议控制在 50–200 MB，并把 `bytes` 与测速时长匹配。
+> 6. **限速实现别用「每 chunk 至少睡 1ms」**：旧版 `pacedBody` 用 `sleep(Math.max(1, chunk/bps))`，上游若返回小 chunk（几 KB），实际吞吐会被钳死到 `chunk大小/1ms` ≈ 3–5 MB/s，即使 `SPEED_LIMIT` 配了 `50m` 也到不了，导致测速门槛永远不达标。新版改为时间预算式限速（只在前发超前时补睡差额，上游慢时如实反映），若发现中转被压到几 MB/s 请更新到最新代码。
 
 ---
 

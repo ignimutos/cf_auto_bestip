@@ -86,6 +86,7 @@ function getUpstreamUa(env, request) {
 function pacedBody(upstreamBody, bytes, bps) {
   const reader = upstreamBody.getReader();
   let delivered = 0;
+  let startedAt = performance.now();
   return new ReadableStream({
     async pull(controller) {
       if (delivered >= bytes) {
@@ -109,7 +110,13 @@ function pacedBody(upstreamBody, bytes, bps) {
       delivered += chunk.byteLength;
       controller.enqueue(chunk);
       if (bps > 0) {
-        await sleep(Math.max(1, Math.round((chunk.byteLength / bps) * 1000)));
+        // 时间预算式限速：按累计已发字节折算应耗时，与实际耗时比较。
+        // 只有“超前发送”时才 sleep 补齐差额；上游/链路本身慢时不额外等待，
+        // 如实反映真实速率。避免“每 chunk 至少睡 1ms”把小 chunk 压到几 MB/s。
+        const budgetMs = (delivered / bps) * 1000;
+        const elapsedMs = performance.now() - startedAt;
+        const slackMs = Math.round(budgetMs - elapsedMs);
+        if (slackMs > 0) await sleep(slackMs);
       }
     },
     cancel() {
