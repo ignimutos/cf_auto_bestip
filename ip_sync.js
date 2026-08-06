@@ -668,9 +668,10 @@ async function defaultRunCfst({
     String(config.IP_SYNC_LATENCY_TEST_CONCURRENCY),
   ];
 
-  // 调试模式：即使没有 IP 达到下载速度下限，也把全部测速数据写入 result.csv，
-  // 便于排查“全部未达标”是候选确实慢、还是测速地址异常
-  args.push("-dd");
+  // 注意：不要传 -dd（禁用下载测速，非调试模式）。它会让所有 IP 下载速度恒为 0，
+  // 导致全部被过滤、误报“无可用 IP”。
+  // 需要“未达标也写入全部数据”时用 -debug（真正的调试模式）。
+  args.push("-debug");
 
   if (config.IP_SYNC_SPEED_TEST_URL) {
     args.push("-url", config.IP_SYNC_SPEED_TEST_URL);
